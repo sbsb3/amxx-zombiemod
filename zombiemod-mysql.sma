@@ -4248,8 +4248,12 @@ public msg_ScoreInfo()
 {
 	if(g_gamemode == MODE_DM)
 	{
-		if(get_msg_args() >= 5)
-			set_msg_arg_int(5, ARG_SHORT, 0)
+		// Unique per player like the TeamInfo string: the client flags anyone
+		// with a matching teamnumber as a teammate (green name tracker, muted
+		// hit feedback), so a shared 0 made everyone friendly.
+		new dmid = get_msg_arg_int(1)
+		if(get_msg_args() >= 5 && dmid >= 1 && dmid <= 32)
+			set_msg_arg_int(5, ARG_SHORT, dmid)
 		return PLUGIN_CONTINUE
 	}
 	if(get_msg_args() < 5)
@@ -4512,9 +4516,13 @@ public task_bot_ammo_refill()
 		if(clip <= 0)
 		{
 			// The dry clip is the problem, not the reserve: RCBot keeps firing
-			// an empty gun instead of reloading. Re-giving the held weapon
-			// re-equips it loaded (same call the /weapon menu uses).
+			// an empty gun instead of reloading, and giving a weapon the bot
+			// already owns only merges ammo into reserve — the clip stays
+			// empty. Strip everything first so the re-give is a fresh pickup,
+			// which arrives with a loaded clip.
+			ts_strip_weapons(id)
 			ts_giveweapon(id, wpn, 210, extra)
+			g_wpn[id] = wpn
 			continue
 		}
 		if(reserve < mag)
