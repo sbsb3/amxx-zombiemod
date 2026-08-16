@@ -7,6 +7,22 @@ This amxmodx mod was created by Steven Linn <StevenlAFl> for the Half-Life mod T
 - Download and install AMXModx and addon:
   - The Specialists
 
+## Game modes
+
+The plugin runs one of three modes per map: **Zombie Mod** (default), **Deathmatch**, or **Team Deathmatch**. Players can switch modes with a chat vote:
+
+- `/votemode` (also `/votezm`, `/votedm`, `/votetdm`) opens a vote menu for all human players (bots don't vote). After 20 seconds the plurality winner is applied by restarting the current map through the existing safe map-change path (bots are kicked first, RCBot refills them after load).
+- The chosen mode persists across map changes via localinfo `gm_mode`; a full server restart reverts to Zombie Mod.
+- Admins can force a mode from the server console: `gm_mode <zm|dm|tdm>`.
+
+In Deathmatch and Team Deathmatch all zombie behavior is disabled — no zombie team, no exp/level HUD or database writes, no entity removal, no weapon-spawn chat commands — so everyone plays with stock models and the normal TS buy/kit weapons, with RCBots filling the server. In Team Deathmatch everyone is force-assigned to Blue/Red keeping the sides even (leaver imbalance is corrected by moving a dead bot), using stock models set by `gm_tdm_model_blue`/`gm_tdm_model_red`.
+
+```bash
+gm_vote_cooldown "120"     # seconds between game mode votes
+gm_tdm_model_blue "seal"   # TDM Blue team model (stock)
+gm_tdm_model_red "merc"    # TDM Red team model (stock)
+```
+
 ## Console Variables
 ```bash
 zombiemod_mysql_host "127.0.0.1"

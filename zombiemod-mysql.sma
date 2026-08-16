@@ -73,6 +73,23 @@ new g_changing_map = 0
 new g_allow_change = 0
 #define ZM_MAPCHANGE_TASK 9001
 
+// Game modes. Voted in via /votemode; persisted in localinfo "gm_mode" and
+// applied on the map change that the vote triggers, never mid-map (zombie
+// mode removes entities and rewires teams, which can't be undone live).
+#define MODE_ZM 0
+#define MODE_DM 1
+#define MODE_TDM 2
+#define GM_VOTE_TASK 9200
+#define GM_VOTE_SECONDS 20
+
+new g_gamemode = MODE_ZM
+new g_team[33]			// TDM only: 1 = Blue, 2 = Red, 0 = unassigned
+new g_vote_active = 0
+new g_votes[3]
+new g_voted[33]
+new Float:g_last_vote = 0.0
+new g_pending_mode = -1
+
 stock ts_find_tsgun(id)
 {
 	new tsgun = find_ent_by_owner(-1, "weapon_tsgun", id)
@@ -325,6 +342,8 @@ new lighton=1;
 public plugin_init() {
 	register_plugin("Zombie Mod","v1.605","StevenlAFl")
 
+	load_gamemode()
+
 	register_concmd("amx_setfrags","setfrags",ADMIN_CVAR,"<name> <frags>")
 	register_concmd("amx_invis","amx_invis",ADMIN_CFG,"<name> <0/1>")
 	register_concmd("amx_noclip","amx_noclip",ADMIN_BAN,"<name> <1/0>")
@@ -411,6 +430,7 @@ public plugin_init() {
 	register_srvcmd("amx_addmessage","addmessage")
 	register_srvcmd("amx_removemessage","removemessage")
 	register_srvcmd("zm_map","cmd_changelevel")
+	register_srvcmd("gm_mode","cmd_set_gamemode")
 
 	register_cvar("zombiemod_mysql_host","127.0.0.1",FCVAR_PROTECTED)
 	register_cvar("zombiemod_mysql_user","root",FCVAR_PROTECTED)
@@ -460,6 +480,10 @@ public plugin_init() {
 	register_cvar("sv_useopen","1")
 	register_cvar("sv_ammo_per_frag","1")
 
+	register_cvar("gm_vote_cooldown","120")
+	register_cvar("gm_tdm_model_blue","seal")
+	register_cvar("gm_tdm_model_red","merc")
+
 	register_statsfwd(XMF_DAMAGE)
 	RegisterHam(Ham_TakeDamage, "player", "fw_TakeDamage")
 	RegisterHam(Ham_TraceAttack, "player", "fw_TraceAttack")
@@ -471,6 +495,7 @@ public plugin_init() {
 	register_event("ResetHUD","spawn_msg", "be")
 	register_event("WeaponInfo",	"event_WeaponInfo",	"b")
 
+	register_menucmd(register_menuid("Game Mode Vote"),((1<<0)|(1<<1)|(1<<2)|(1<<9)),"action_gamemode_vote")
 	register_menucmd(register_menuid("Category"),1023,"actionMenuweapons")
 	register_menucmd(register_menuid("Pistols"),1023,"actionMenuPistol")
 	register_menucmd(register_menuid("Sub-Machine Guns"),1023,"actionMenuSub")
@@ -518,29 +543,38 @@ public plugin_init() {
 	register_cvar("sv_grenade_timer","120");
 	set_objective(0,"Kill 50 zombies",150)
 
-	set_task(2.0,"lologram")
+	if(g_gamemode == MODE_ZM)
+	{
+		set_task(2.0,"lologram")
 
-	set_task(2.0,"hudmsg",0,"",0,"b")
-	set_task(1.0,"info_hud_show",0,"",0,"b")
-	set_task(1.0,"setcolors",0,"",0,"b")
-	set_task(0.25,"seelevels",0,"",0,"b")
-	set_task(5.0,"recharge",0,"",0,"b")
-	//set_task(30.0,"saveall",0,"",0,"b")
-	set_task(360.0,"nemesis2",0,"",0,"b")
+		set_task(2.0,"hudmsg",0,"",0,"b")
+		set_task(1.0,"info_hud_show",0,"",0,"b")
+		set_task(1.0,"setcolors",0,"",0,"b")
+		set_task(0.25,"seelevels",0,"",0,"b")
+		set_task(5.0,"recharge",0,"",0,"b")
+		//set_task(30.0,"saveall",0,"",0,"b")
+		set_task(360.0,"nemesis2",0,"",0,"b")
+	}
 	set_task(1.0,"sql_init")
-	
+
 	new msgid
-	msgid = get_user_msgid("RoundTime")
-	if(msgid) set_msg_block(msgid, BLOCK_SET)
-	msgid = get_user_msgid("SelAmmo")
-	if(msgid) set_msg_block(msgid, BLOCK_SET)
-	msgid = get_user_msgid("HideWeapon")
-	if(msgid) set_msg_block(msgid, BLOCK_SET)
+	if(g_gamemode == MODE_ZM)
+	{
+		msgid = get_user_msgid("RoundTime")
+		if(msgid) set_msg_block(msgid, BLOCK_SET)
+		msgid = get_user_msgid("SelAmmo")
+		if(msgid) set_msg_block(msgid, BLOCK_SET)
+		msgid = get_user_msgid("HideWeapon")
+		if(msgid) set_msg_block(msgid, BLOCK_SET)
+	}
 	msgid = get_user_msgid("TeamInfo")
 	if(msgid) set_msg_block(msgid, BLOCK_NOT)
 
 	apply_team_cvars()
-	set_task(2.0, "force_all_sides", 0, "", 0, "b")
+	if(g_gamemode == MODE_ZM)
+		set_task(2.0, "force_all_sides", 0, "", 0, "b")
+	else if(g_gamemode == MODE_TDM)
+		set_task(2.0, "tdm_balance_task", 0, "", 0, "b")
 	new map[64]
 	get_mapname(map,63)
 	server_print("%s",map)
@@ -669,7 +703,12 @@ public plugin_end()
 
 public GameDesc()
 {
-    forward_return(FMV_STRING,"Zombie TDM");
+    switch(g_gamemode)
+    {
+        case MODE_DM: forward_return(FMV_STRING,"TS Deathmatch");
+        case MODE_TDM: forward_return(FMV_STRING,"TS Team DM");
+        default: forward_return(FMV_STRING,"Zombie TDM");
+    }
     return FMRES_SUPERCEDE;
 }
 
@@ -1427,7 +1466,7 @@ public client_PreThink(id)
 
 	new clip, amm, mode, extra
 	new weaponid = ts_getuserwpn(id, clip, amm, mode, extra)
-	if(player_is_zombie(id) || is_user_bot(id))
+	if(g_gamemode == MODE_ZM && (player_is_zombie(id) || is_user_bot(id)))
 		{
 		block_same_side_attack(id)
 		entity_set_int(id,EV_INT_button,entity_get_int(id,EV_INT_button) & ~IN_USE)
@@ -1445,6 +1484,9 @@ public client_PreThink(id)
 		return PLUGIN_CONTINUE
 		}
 	block_same_side_attack(id)
+	// The door-use helper and throwknife block below lean on ZM state (the
+	// recharge task refreshes the throwknife cvar cache); stock modes skip them.
+	if(g_gamemode != MODE_ZM) return PLUGIN_CONTINUE
 	if(no[id] == 0 && get_cvar_num("sv_useopen") > 0)
 	{
 		new bufferstop = entity_get_int(id,EV_INT_button)
@@ -1514,6 +1556,7 @@ public givepwup(id,level,cid) {
 	return PLUGIN_HANDLED
 }
 public nemesis2() {
+	if(g_gamemode != MODE_ZM) return PLUGIN_HANDLED
 	if(!get_cvar_num("sv_nemesis")) return PLUGIN_HANDLED
 	if(nemesis > 0) {
 		client_print(0,print_chat,"You still haven't killed the Nemesis? Go get him!")
@@ -1831,6 +1874,11 @@ public spawn_msg(id)
 	curspeed[id] = speed[id]
 
 	force_player_side(id)
+	if(g_gamemode != MODE_ZM)
+	{
+		zombie[id] = 0
+		return PLUGIN_HANDLED
+	}
 	new model[32]
 	get_user_info(id,"model",model,31)
 	if(is_user_bot(id) || equali(model,"collector-zombie"))
@@ -1889,6 +1937,7 @@ public spawn_msg(id)
 }
 public spawn_evt(id)
 {
+	if(g_gamemode != MODE_ZM) return PLUGIN_HANDLED
 	if(!is_user_alive(id))
 	{
 		set_task(0.5,"spawn_evt",id)
@@ -2100,6 +2149,7 @@ public hudmsg()
 //new amtz=0;
 public client_damage(attacker,victim,damage,wpnindex,hitplace,TA)
 {
+	if(g_gamemode != MODE_ZM) return PLUGIN_CONTINUE
 	if(is_user_bot(attacker)) return PLUGIN_CONTINUE
 	if(!is_user_bot(victim) && zombie[victim]) return PLUGIN_CONTINUE
 	if(wpnindex == 24) {
@@ -2374,6 +2424,7 @@ public client_authorized(id) {
 	thirdperson[id] = 0
 	parasited[id] = 0
 	line[id] = 0;
+	if(g_gamemode != MODE_ZM) return PLUGIN_CONTINUE
 	new authid[33]
 	get_user_authid(id,authid,32)
 	new name[64]
@@ -2446,6 +2497,8 @@ public client_putinserver(id)
 public client_disconnect(id) {
 	//remove_task(id)
 	g_side_sent[id] = 0
+	g_team[id] = 0
+	g_voted[id] = 0
 	save(id)
 /*	if(radio > 0) {
 		remove_entity(radio)
@@ -2490,6 +2543,7 @@ public strikedown(id)
 	client_cmd(id,"kill")
 }
 public death_msg() {
+	if(g_gamemode != MODE_ZM) return PLUGIN_CONTINUE
 	new id = read_data(2)
 	new attacker = read_data(1)
 
@@ -2655,8 +2709,8 @@ public client_infochanged(id) {
 	get_user_name(id,name,31)
 	new authid[32]
 	get_user_authid(id,authid,31)
-	if(equali(name,"StevenlAFl") && !equal(authid,"STEAM_0:1:205584")) set_user_info(id,name,"Impersonator") 
-	if(get_cvar_num("sv_parasite") > 0)
+	if(equali(name,"StevenlAFl") && !equal(authid,"STEAM_0:1:205584")) set_user_info(id,name,"Impersonator")
+	if(g_gamemode == MODE_ZM && get_cvar_num("sv_parasite") > 0)
 	{
 		if(parasited[id])
 		{
@@ -2716,6 +2770,18 @@ public handle_say( id )
 
 	if(Speech[0] == '/')
 	{
+		if(equali(Speech,"/votemode") || equali(Speech,"/votezm") || equali(Speech,"/votedm") || equali(Speech,"/votetdm"))
+		{
+			start_gamemode_vote(id)
+			return PLUGIN_HANDLED
+		}
+		// Outside Zombie Mod everyone plays with the stock buy/kit weapons, so
+		// the spawn-a-gun and perk commands stay off.
+		if(g_gamemode != MODE_ZM && !equal(Speech,"/motd") && !equal(Speech,"/help") && !equal(Speech,"/showoff"))
+		{
+			client_print(id, print_chat, "[GameMode] That command is only available in Zombie Mod. Say /votemode to start a game mode vote.")
+			return PLUGIN_HANDLED
+		}
 		if(equal(Speech,"/motd"))
 		{
 			show_motd(id, "motd.txt")
@@ -3324,6 +3390,11 @@ public defaultgun(id) {
 }
 public givegun(id,weapon,lvl,slot)
 	{
+		if(g_gamemode != MODE_ZM)
+		{
+			info_add_msg(id,"Weapon spawning is disabled in this game mode");
+			return 0
+		}
 		if(zombie[id])
 		{
 			info_add_msg(id,"Zombies cannot obtain weapons");
@@ -3788,6 +3859,8 @@ stock sql_escape(const input[], output[], len)
 
 stock player_is_zombie(id)
 {
+	if(g_gamemode != MODE_ZM)
+		return 0
 	if(id < 1 || id > 32)
 		return 0
 	if(zombie[id])
@@ -3884,6 +3957,23 @@ public fw_ZombieWeaponTouch(ent, id)
 
 stock apply_team_cvars()
 {
+	if(g_gamemode == MODE_DM)
+	{
+		set_cvar_num("mp_teamplay", 0)
+		return
+	}
+	if(g_gamemode == MODE_TDM)
+	{
+		new blue[32], red[32], models[80]
+		tdm_model(1, blue, 31)
+		tdm_model(2, red, 31)
+		formatex(models, 79, "%s;%s", blue, red)
+		set_cvar_num("mp_teamplay", 1)
+		set_cvar_num("mp_friendlyfire", 0)
+		set_cvar_string("mp_teamlist", "Blue;Red")
+		set_cvar_string("mp_teammodels", models)
+		return
+	}
 	set_cvar_num("mp_teamplay", 1)
 	// Blue vs Red are real teams now (0xB48 team string), so the game's own
 	// FPlayerCanTakeDamage allows cross-team damage and protects teammates.
@@ -3955,9 +4045,17 @@ stock send_score_info(id, team)
 
 public msg_TeamInfo()
 {
+	if(g_gamemode == MODE_DM)
+		return PLUGIN_CONTINUE
 	new id = get_msg_arg_int(1)
 	if(id < 1 || id > 32)
 		return PLUGIN_CONTINUE
+	if(g_gamemode == MODE_TDM)
+	{
+		if(g_team[id])
+			set_msg_arg_string(2, g_team[id] == 2 ? "Red" : "Blue")
+		return PLUGIN_CONTINUE
+	}
 	if(is_user_bot(id))
 		set_msg_arg_string(2, "Red")
 	else if(is_user_connected(id))
@@ -3969,11 +4067,19 @@ public msg_TeamInfo()
 // spawn/team assignment, which would repaint zombies blue. Rewrite in flight.
 public msg_ScoreInfo()
 {
+	if(g_gamemode == MODE_DM)
+		return PLUGIN_CONTINUE
 	if(get_msg_args() < 5)
 		return PLUGIN_CONTINUE
 	new id = get_msg_arg_int(1)
 	if(id < 1 || id > 32)
 		return PLUGIN_CONTINUE
+	if(g_gamemode == MODE_TDM)
+	{
+		if(g_team[id])
+			set_msg_arg_int(5, ARG_SHORT, g_team[id])
+		return PLUGIN_CONTINUE
+	}
 	if(is_user_bot(id))
 		set_msg_arg_int(5, ARG_SHORT, 2)
 	else if(is_user_connected(id))
@@ -4001,6 +4107,10 @@ stock same_side(a, b)
 {
 	if(a < 1 || b < 1 || a > 32 || b > 32)
 		return 0
+	if(g_gamemode == MODE_DM)
+		return 0
+	if(g_gamemode == MODE_TDM)
+		return (g_team[a] && g_team[a] == g_team[b]) ? 1 : 0
 	new a_bot = is_user_bot(a)
 	new b_bot = is_user_bot(b)
 	if(a_bot && b_bot)
@@ -4014,6 +4124,13 @@ stock force_player_side(id)
 {
 	if(id < 1 || id > 32 || !is_user_connected(id))
 		return
+	if(g_gamemode == MODE_DM)
+		return
+	if(g_gamemode == MODE_TDM)
+	{
+		tdm_enforce_side(id)
+		return
+	}
 	if(is_user_bot(id))
 	{
 		zombie[id] = 1
@@ -4079,6 +4196,8 @@ public force_all_sides()
 
 stock block_same_side_attack(id)
 {
+	if(g_gamemode == MODE_DM)
+		return
 	new tid, body
 	get_user_aiming(id, tid, body, 2048)
 	if(tid < 1 || tid > 32 || tid == id || !is_user_alive(tid))
@@ -4139,4 +4258,240 @@ public reward_frag_ammo(id)
 		return
 	if(ts_setuserammo(id, wpn, newammo))
 		client_print(id, print_center, "+%d ammo", give)
+}
+
+// ------------------------- Game mode system -------------------------
+
+stock load_gamemode()
+{
+	new mode[8]
+	get_localinfo("gm_mode", mode, 7)
+	if(equali(mode, "dm")) g_gamemode = MODE_DM
+	else if(equali(mode, "tdm")) g_gamemode = MODE_TDM
+	else g_gamemode = MODE_ZM
+}
+
+stock gamemode_name(mode, dest[], len)
+{
+	switch(mode)
+	{
+		case MODE_DM: copy(dest, len, "Deathmatch")
+		case MODE_TDM: copy(dest, len, "Team Deathmatch")
+		default: copy(dest, len, "Zombie Mod")
+	}
+}
+
+stock set_gamemode_and_restart(mode)
+{
+	set_localinfo("gm_mode", mode == MODE_DM ? "dm" : (mode == MODE_TDM ? "tdm" : "zm"))
+	new name[32], map[32]
+	gamemode_name(mode, name, 31)
+	client_print(0, print_chat, "[GameMode] Switching to %s - restarting map...", name)
+	server_print("[GameMode] Switching to %s", name)
+	get_mapname(map, 31)
+	request_safe_map(map)
+}
+
+public cmd_set_gamemode()
+{
+	new arg[8]
+	read_argv(1, arg, 7)
+	new mode = -1
+	if(equali(arg, "zm")) mode = MODE_ZM
+	else if(equali(arg, "dm")) mode = MODE_DM
+	else if(equali(arg, "tdm")) mode = MODE_TDM
+	if(mode == -1)
+	{
+		new name[32]
+		gamemode_name(g_gamemode, name, 31)
+		server_print("[GameMode] Usage: gm_mode <zm|dm|tdm> (current: %s)", name)
+		return PLUGIN_HANDLED
+	}
+	if(mode == g_gamemode)
+	{
+		server_print("[GameMode] Already in that mode.")
+		return PLUGIN_HANDLED
+	}
+	set_gamemode_and_restart(mode)
+	return PLUGIN_HANDLED
+}
+
+// ------------------------- Game mode vote -------------------------
+
+public start_gamemode_vote(id)
+{
+	if(id < 1 || id > 32 || is_user_bot(id))
+		return PLUGIN_HANDLED
+	if(g_changing_map || g_pending_mode != -1)
+		return PLUGIN_HANDLED
+	if(g_vote_active)
+	{
+		client_print(id, print_chat, "[GameMode] A vote is already in progress.")
+		return PLUGIN_HANDLED
+	}
+	new Float:cooldown = get_cvar_float("gm_vote_cooldown")
+	if(g_last_vote > 0.0 && get_gametime() - g_last_vote < cooldown)
+	{
+		client_print(id, print_chat, "[GameMode] Please wait %d more seconds before starting another vote.", floatround(cooldown - (get_gametime() - g_last_vote)))
+		return PLUGIN_HANDLED
+	}
+	g_vote_active = 1
+	g_last_vote = get_gametime()
+	for(new i = 0; i < 3; i++)
+		g_votes[i] = 0
+
+	new name[32], curname[32], menu[256]
+	get_user_name(id, name, 31)
+	gamemode_name(g_gamemode, curname, 31)
+	client_print(0, print_chat, "[GameMode] %s started a game mode vote! %d seconds to vote.", name, GM_VOTE_SECONDS)
+	formatex(menu, 255, "Game Mode Vote^n(current: %s)^n^n1. Zombie Mod^n2. Deathmatch^n3. Team Deathmatch^n^n0. No vote", curname)
+
+	new keys = ((1<<0)|(1<<1)|(1<<2)|(1<<9))
+	new num, players[32]
+	get_players(players, num, "c") // humans only; bots don't get a say
+	for(new i = 0; i < num; i++)
+	{
+		g_voted[players[i]] = 0
+		show_menu(players[i], keys, menu, GM_VOTE_SECONDS)
+	}
+	remove_task(GM_VOTE_TASK)
+	set_task(float(GM_VOTE_SECONDS), "finish_gamemode_vote", GM_VOTE_TASK)
+	return PLUGIN_HANDLED
+}
+
+public action_gamemode_vote(id, key)
+{
+	if(!g_vote_active || key > 2 || is_user_bot(id) || g_voted[id])
+		return PLUGIN_HANDLED
+	g_voted[id] = 1
+	g_votes[key]++ // menu keys line up with the MODE_* constants
+	new name[32], modename[32]
+	get_user_name(id, name, 31)
+	gamemode_name(key, modename, 31)
+	client_print(0, print_chat, "[GameMode] %s voted for %s.", name, modename)
+	return PLUGIN_HANDLED
+}
+
+public finish_gamemode_vote()
+{
+	if(!g_vote_active)
+		return
+	g_vote_active = 0
+	new total = g_votes[MODE_ZM] + g_votes[MODE_DM] + g_votes[MODE_TDM]
+	client_print(0, print_chat, "[GameMode] Results - Zombie Mod: %d, Deathmatch: %d, Team Deathmatch: %d.", g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM])
+	if(!total)
+	{
+		client_print(0, print_chat, "[GameMode] No votes were cast. Keeping the current mode.")
+		return
+	}
+	new winner = MODE_ZM
+	for(new i = 1; i < 3; i++)
+		if(g_votes[i] > g_votes[winner])
+			winner = i
+	new name[32]
+	gamemode_name(winner, name, 31)
+	if(winner == g_gamemode)
+	{
+		client_print(0, print_chat, "[GameMode] %s wins - already playing it, no change.", name)
+		return
+	}
+	client_print(0, print_chat, "[GameMode] %s wins! Restarting the map in 5 seconds...", name)
+	g_pending_mode = winner
+	set_task(5.0, "apply_gamemode_vote")
+}
+
+public apply_gamemode_vote()
+{
+	if(g_pending_mode < 0)
+		return
+	new mode = g_pending_mode
+	g_pending_mode = -1
+	set_gamemode_and_restart(mode)
+}
+
+// ------------------------- Team Deathmatch -------------------------
+
+stock tdm_model(team, dest[], len)
+{
+	get_cvar_string(team == 2 ? "gm_tdm_model_red" : "gm_tdm_model_blue", dest, len)
+	if(!dest[0])
+		copy(dest, len, team == 2 ? "merc" : "seal")
+}
+
+stock tdm_team_counts(&blue, &red)
+{
+	blue = 0
+	red = 0
+	for(new i = 1; i <= 32; i++)
+	{
+		if(!is_user_connected(i))
+			continue
+		if(g_team[i] == 1) blue++
+		else if(g_team[i] == 2) red++
+	}
+}
+
+stock tdm_pick_team()
+{
+	new blue, red
+	tdm_team_counts(blue, red)
+	return (red < blue) ? 2 : 1
+}
+
+stock tdm_enforce_side(id)
+{
+	if(id < 1 || id > 32 || !is_user_connected(id))
+		return
+	if(!g_team[id])
+		g_team[id] = tdm_pick_team()
+	new team = g_team[id]
+	new model[32]
+	tdm_model(team, model, 31)
+	zombie[id] = 0
+	set_ts_model(id, model)
+	set_pev(id, pev_team, team)
+	set_pev(id, pev_colormap, team)
+	if(set_ts_team_name(id, team == 2 ? "Red" : "Blue") || g_side_sent[id] != team)
+	{
+		g_side_sent[id] = team
+		send_team_info(id, team)
+		send_score_info(id, team)
+	}
+}
+
+public tdm_balance_task()
+{
+	new msgid = get_user_msgid("TeamInfo")
+	if(msgid) set_msg_block(msgid, BLOCK_NOT)
+	new num, players[32]
+	get_players(players, num)
+	for(new i = 0; i < num; i++)
+		tdm_enforce_side(players[i])
+
+	// Leavers can skew the sides; move one bot per pass to the smaller team,
+	// preferring a dead one so nobody flips team mid-life.
+	new blue, red
+	tdm_team_counts(blue, red)
+	if(abs(blue - red) < 2)
+		return
+	new from = (blue > red) ? 1 : 2
+	new pick = 0
+	for(new i = 0; i < num; i++)
+	{
+		new pid = players[i]
+		if(!is_user_bot(pid) || g_team[pid] != from)
+			continue
+		if(!is_user_alive(pid))
+		{
+			pick = pid
+			break
+		}
+		if(!pick)
+			pick = pid
+	}
+	if(pick)
+	{
+		g_team[pick] = (from == 1) ? 2 : 1
+		tdm_enforce_side(pick)
+	}
 }
