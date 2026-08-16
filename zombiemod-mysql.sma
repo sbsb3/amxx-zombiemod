@@ -495,6 +495,9 @@ public plugin_init() {
 	RegisterHam(Ham_Spawn, "player", "fw_PlayerSpawn", 1)
 	register_message(get_user_msgid("TeamInfo"), "msg_TeamInfo")
 	register_message(get_user_msgid("ScoreInfo"), "msg_ScoreInfo")
+	new gamemode_msg = get_user_msgid("GameMode")
+	if(gamemode_msg)
+		register_message(gamemode_msg, "msg_GameMode")
 	register_forward(FM_SetClientMaxspeed, "forward_SetClientMaxspeed")
 	register_event("DeathMsg","death_msg","a")
 	register_event("ResetHUD","spawn_msg", "be")
@@ -4213,12 +4216,18 @@ stock send_score_info(id, team)
 
 public msg_TeamInfo()
 {
-	// DM: leave the game's native model-bucket TeamInfo alone. Anything else
-	// breaks the client: one shared string files everyone as teammates, and a
-	// unique string per player overflows the client's ~4-slot team array
-	// (garbage headers, hostname bleeding into team names).
+	// DM: leave the game's native TeamInfo alone. Anything else breaks the
+	// client: one shared string files everyone as teammates, and a unique
+	// string per player overflows the client's ~4-slot team array (garbage
+	// headers, hostname bleeding into team names). Log to find what the DLL
+	// actually sends while DM still shows colored teams.
 	if(g_gamemode == MODE_DM)
+	{
+		new dbg_team[32]
+		get_msg_arg_string(2, dbg_team, 31)
+		server_print("[GM-DBG] TeamInfo id=%d team=^"%s^"", get_msg_arg_int(1), dbg_team)
 		return PLUGIN_CONTINUE
+	}
 	new id = get_msg_arg_int(1)
 	if(id < 1 || id > 32)
 		return PLUGIN_CONTINUE
@@ -4235,13 +4244,32 @@ public msg_TeamInfo()
 	return PLUGIN_CONTINUE
 }
 
+// The HL client renders the grouped/colored team scoreboard whenever this
+// message's byte says "teamplay", regardless of actual team state. The TS
+// DLL sends it from its always-teamplay-ish gamerules, so DM must force it
+// to 0 to get the flat listenserver-style board.
+public msg_GameMode()
+{
+	new val = get_msg_args() >= 1 ? get_msg_arg_int(1) : -1
+	server_print("[GM-DBG] GameMode byte=%d (mode=%d)", val, g_gamemode)
+	if(g_gamemode == MODE_DM && get_msg_args() >= 1 && val != 0)
+		set_msg_arg_int(1, ARG_BYTE, 0)
+	return PLUGIN_CONTINUE
+}
+
 // The game resends ScoreInfo (with teamnumber from its own team state) on
 // spawn/team assignment, which would repaint zombies blue. Rewrite in flight.
 public msg_ScoreInfo()
 {
 	// DM: native passthrough, same reason as msg_TeamInfo.
 	if(g_gamemode == MODE_DM)
+	{
+		if(get_msg_args() >= 5)
+			server_print("[GM-DBG] ScoreInfo id=%d frags=%d deaths=%d class=%d team=%d",
+				get_msg_arg_int(1), get_msg_arg_int(2), get_msg_arg_int(3),
+				get_msg_arg_int(4), get_msg_arg_int(5))
 		return PLUGIN_CONTINUE
+	}
 	if(get_msg_args() < 5)
 		return PLUGIN_CONTINUE
 	new id = get_msg_arg_int(1)
@@ -4333,7 +4361,17 @@ stock force_player_side(id)
 	if(id < 1 || id > 32 || !is_user_connected(id))
 		return
 	if(g_gamemode == MODE_DM)
+	{
+		// ZM wrote collector-zombie into the client's persistent setinfo, so
+		// it follows players into DM (and RCBot clones human models onto
+		// bots, spreading it further). Shed it here; players can still pick
+		// any normal character afterwards.
+		new model[32]
+		get_user_info(id, "model", model, 31)
+		if(equali(model, "collector-zombie"))
+			set_ts_model(id, "seal")
 		return
+	}
 	if(g_gamemode == MODE_TDM)
 	{
 		tdm_enforce_side(id)
