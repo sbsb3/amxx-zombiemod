@@ -4118,6 +4118,10 @@ stock apply_team_cvars_for(mode)
 	if(mode == MODE_DM)
 	{
 		set_cvar_num("mp_teamplay", 0)
+		// FFA: the TS DLL still buckets players by model into mp_teamlist
+		// slots and protects same-bucket "teammates" when friendlyfire is
+		// off, so it must be ON here for everyone to be killable.
+		set_cvar_num("mp_friendlyfire", 1)
 		// The engine ignores these with teamplay off, but RCBot dresses its
 		// bots from mp_teammodels — leave the ZM pair here and the bots keep
 		// spawning as collector-zombie in FFA (and the DM scoreboard groups
@@ -4209,23 +4213,12 @@ stock send_score_info(id, team)
 
 public msg_TeamInfo()
 {
+	// DM: leave the game's native model-bucket TeamInfo alone. Anything else
+	// breaks the client: one shared string files everyone as teammates, and a
+	// unique string per player overflows the client's ~4-slot team array
+	// (garbage headers, hostname bleeding into team names).
 	if(g_gamemode == MODE_DM)
-	{
-		// Even with teamplay off, the TS DLL buckets players into mp_teamlist
-		// slots by model and sends that as their team, so the scoreboard shows
-		// fake teams — and a shared team string (even "") makes the client
-		// treat those players as teammates: grouped rows, muted hit feedback.
-		// A unique string per player (their own name) means no two players
-		// ever share a team.
-		new dmid = get_msg_arg_int(1)
-		if(dmid >= 1 && dmid <= 32 && is_user_connected(dmid))
-		{
-			new dmname[32]
-			get_user_name(dmid, dmname, 31)
-			set_msg_arg_string(2, dmname)
-		}
 		return PLUGIN_CONTINUE
-	}
 	new id = get_msg_arg_int(1)
 	if(id < 1 || id > 32)
 		return PLUGIN_CONTINUE
@@ -4246,16 +4239,9 @@ public msg_TeamInfo()
 // spawn/team assignment, which would repaint zombies blue. Rewrite in flight.
 public msg_ScoreInfo()
 {
+	// DM: native passthrough, same reason as msg_TeamInfo.
 	if(g_gamemode == MODE_DM)
-	{
-		// Unique per player like the TeamInfo string: the client flags anyone
-		// with a matching teamnumber as a teammate (green name tracker, muted
-		// hit feedback), so a shared 0 made everyone friendly.
-		new dmid = get_msg_arg_int(1)
-		if(get_msg_args() >= 5 && dmid >= 1 && dmid <= 32)
-			set_msg_arg_int(5, ARG_SHORT, dmid)
 		return PLUGIN_CONTINUE
-	}
 	if(get_msg_args() < 5)
 		return PLUGIN_CONTINUE
 	new id = get_msg_arg_int(1)
