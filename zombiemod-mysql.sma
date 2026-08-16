@@ -324,7 +324,7 @@ new g_internal_hour;
 new dolights=0;
 new lighton=1;
 public plugin_init() {
-	register_plugin("Zombie Mod","v1.599","StevenlAFl")
+	register_plugin("Zombie Mod","v1.603","StevenlAFl")
 
 	register_concmd("amx_setfrags","setfrags",ADMIN_CVAR,"<name> <frags>")
 	register_concmd("amx_invis","amx_invis",ADMIN_CFG,"<name> <0/1>")
@@ -463,6 +463,8 @@ public plugin_init() {
 	register_statsfwd(XMF_DAMAGE)
 	RegisterHam(Ham_TakeDamage, "player", "fw_TakeDamage")
 	RegisterHam(Ham_TraceAttack, "player", "fw_TraceAttack")
+	RegisterHam(Ham_Spawn, "player", "fw_PlayerSpawn", 1)
+	register_message(get_user_msgid("TeamInfo"), "msg_TeamInfo")
 	register_forward(FM_SetClientMaxspeed, "forward_SetClientMaxspeed")
 	register_event("DeathMsg","death_msg","a")
 	register_event("ResetHUD","spawn_msg", "be")
@@ -558,6 +560,11 @@ public plugin_init() {
 	server_cmd("exec %s/ZombieMod/zombiemod_config.cfg",configsDir)
 }
 
+public plugin_cfg()
+{
+	apply_team_cvars()
+}
+
 public plugin_end()
 {
 	if(g_vault != -1)
@@ -574,7 +581,7 @@ public plugin_end()
 
 public GameDesc()
 {
-    forward_return(FMV_STRING,"Zombie DM");
+    forward_return(FMV_STRING,"Zombie TDM");
     return FMRES_SUPERCEDE;
 }
 
@@ -1329,7 +1336,6 @@ new zombie_throwknives = 0;
 public client_PreThink(id)
 	{
 	if(!is_user_alive(id)) return PLUGIN_CONTINUE
-	force_player_side(id)
 
 	new clip, amm, mode, extra
 	new weaponid = ts_getuserwpn(id, clip, amm, mode, extra)
@@ -2338,6 +2344,7 @@ public client_authorized(id) {
 }
 public client_putinserver(id)
 {
+	force_player_side(id)
 	if(is_user_bot(id)) return PLUGIN_HANDLED
 	if(dolights == 1) set_lights( g_lights[g_internal_hour] )
 	new currentfactor = findavailable(id)
@@ -3786,10 +3793,10 @@ public fw_ZombieWeaponTouch(ent, id)
 
 stock apply_team_cvars()
 {
-	server_cmd("mp_teamplay 1")
-	server_cmd("mp_friendlyfire 0")
-	server_cmd("mp_teamlist ^"seal;collector-zombie^"")
-	server_cmd("mp_teammodels ^"seal;collector-zombie^"")
+	set_cvar_num("mp_teamplay", 1)
+	set_cvar_num("mp_friendlyfire", 0)
+	set_cvar_string("mp_teamlist", "Blue;Red")
+	set_cvar_string("mp_teammodels", "seal;collector-zombie")
 }
 
 stock set_ts_model(id, const model[])
@@ -3800,10 +3807,48 @@ stock set_ts_model(id, const model[])
 		return
 	set_user_info(id, "model", model)
 	engclient_cmd(id, "model", model)
-	if(equali(model, "collector-zombie"))
-		engclient_cmd(id, "jointeam", "2")
-	else
-		engclient_cmd(id, "jointeam", "1")
+}
+
+stock ts_team_name(id, dest[], len)
+{
+	dest[0] = 0
+	if(id < 1 || id > 32 || pev_valid(id) != 2)
+		return
+	get_pdata_string(id, 0xB48, dest, len, 0, 0)
+}
+
+stock set_ts_team_name(id, const team[])
+{
+	if(id < 1 || id > 32 || pev_valid(id) != 2)
+		return
+	new cur[16]
+	ts_team_name(id, cur, 15)
+	if(equali(cur, team))
+		return
+	set_pdata_string(id, 0xB48, team, -1, 0)
+}
+
+stock send_team_info(id, team)
+{
+	new msgid = get_user_msgid("TeamInfo")
+	if(!msgid || id < 1 || id > 32)
+		return
+	message_begin(MSG_ALL, msgid)
+	write_byte(id)
+	write_string(team == 2 ? "Red" : "Blue")
+	message_end()
+}
+
+public msg_TeamInfo()
+{
+	new id = get_msg_arg_int(1)
+	if(id < 1 || id > 32)
+		return PLUGIN_CONTINUE
+	if(is_user_bot(id))
+		set_msg_arg_string(2, "Red")
+	else if(is_user_connected(id))
+		set_msg_arg_string(2, "Blue")
+	return PLUGIN_CONTINUE
 }
 
 public dump_models()
@@ -3813,10 +3858,11 @@ public dump_models()
 	for(new i = 0; i < num; i++)
 	{
 		new id = players[i]
-		new name[32], model[32]
+		new name[32], model[32], tname[16]
 		get_user_name(id, name, 31)
 		get_user_info(id, "model", model, 31)
-		server_print("[ZM] %s bot=%d team=%d model=%s", name, is_user_bot(id), get_user_team(id), model)
+		ts_team_name(id, tname, 15)
+		server_print("[ZM] %s bot=%d team=%d pevteam=%d ts=%s model=%s", name, is_user_bot(id), get_user_team(id), pev(id, pev_team), tname, model)
 	}
 	return PLUGIN_HANDLED
 }
@@ -3839,6 +3885,9 @@ stock force_player_side(id)
 		zombie[id] = 1
 		set_ts_model(id, "collector-zombie")
 		set_pev(id, pev_team, 2)
+		set_pev(id, pev_colormap, 2)
+		set_ts_team_name(id, "Red")
+		send_team_info(id, 2)
 		return
 	}
 	if(get_cvar_num("sv_parasite") > 0 && parasited[id])
@@ -3847,11 +3896,25 @@ stock force_player_side(id)
 		return
 	}
 	zombie[id] = 0
-	new model[32]
-	get_user_info(id, "model", model, 31)
-	if(!equali(model, "seal"))
-		set_ts_model(id, "seal")
+	set_ts_model(id, "seal")
 	set_pev(id, pev_team, 1)
+	set_pev(id, pev_colormap, 1)
+	set_ts_team_name(id, "Blue")
+	send_team_info(id, 1)
+}
+
+public force_player_side_task(id)
+{
+	force_player_side(id)
+}
+
+public fw_PlayerSpawn(id)
+{
+	if(id < 1 || id > 32 || !is_user_connected(id))
+		return HAM_IGNORED
+	force_player_side(id)
+	set_task(0.2, "force_player_side_task", id)
+	return HAM_IGNORED
 }
 
 public fw_ClientUserInfoChanged(id)
