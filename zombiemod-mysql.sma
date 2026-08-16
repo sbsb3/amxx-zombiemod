@@ -583,6 +583,8 @@ public plugin_init() {
 		set_task(2.0, "force_all_sides", 0, "", 0, "b")
 	else if(g_gamemode == MODE_TDM)
 		set_task(2.0, "tdm_balance_task", 0, "", 0, "b")
+	else if(g_gamemode == MODE_DM)
+		set_task(2.0, "dm_enforce_task", 0, "", 0, "b")
 	if(g_gamemode != MODE_ZM)
 		set_task(3.0, "task_bot_ammo_refill", 0, "", 0, "b")
 	new map[64]
@@ -4223,9 +4225,9 @@ public msg_TeamInfo()
 	// actually sends while DM still shows colored teams.
 	if(g_gamemode == MODE_DM)
 	{
-		new dbg_team[32]
-		get_msg_arg_string(2, dbg_team, 31)
-		server_print("[GM-DBG] TeamInfo id=%d team=^"%s^"", get_msg_arg_int(1), dbg_team)
+		// Blank like a listenserver: with the GameMode byte forced to 0 the
+		// client keeps a flat board and no shared-team grouping can form.
+		set_msg_arg_string(2, "")
 		return PLUGIN_CONTINUE
 	}
 	new id = get_msg_arg_int(1)
@@ -4250,9 +4252,7 @@ public msg_TeamInfo()
 // to 0 to get the flat listenserver-style board.
 public msg_GameMode()
 {
-	new val = get_msg_args() >= 1 ? get_msg_arg_int(1) : -1
-	server_print("[GM-DBG] GameMode byte=%d (mode=%d)", val, g_gamemode)
-	if(g_gamemode == MODE_DM && get_msg_args() >= 1 && val != 0)
+	if(g_gamemode == MODE_DM && get_msg_args() >= 1 && get_msg_arg_int(1) != 0)
 		set_msg_arg_int(1, ARG_BYTE, 0)
 	return PLUGIN_CONTINUE
 }
@@ -4261,13 +4261,11 @@ public msg_GameMode()
 // spawn/team assignment, which would repaint zombies blue. Rewrite in flight.
 public msg_ScoreInfo()
 {
-	// DM: native passthrough, same reason as msg_TeamInfo.
+	// DM: teamnumber 0 for everyone — uniform listenserver-orange names.
 	if(g_gamemode == MODE_DM)
 	{
 		if(get_msg_args() >= 5)
-			server_print("[GM-DBG] ScoreInfo id=%d frags=%d deaths=%d class=%d team=%d",
-				get_msg_arg_int(1), get_msg_arg_int(2), get_msg_arg_int(3),
-				get_msg_arg_int(4), get_msg_arg_int(5))
+			set_msg_arg_int(5, ARG_SHORT, 0)
 		return PLUGIN_CONTINUE
 	}
 	if(get_msg_args() < 5)
@@ -4370,6 +4368,17 @@ stock force_player_side(id)
 		get_user_info(id, "model", model, 31)
 		if(equali(model, "collector-zombie"))
 			set_ts_model(id, "seal")
+		// The DLL auto-cycles joiners onto Team1..Team4 even with teamplay 0
+		// and an empty teamlist, so every 4th player is your "teammate":
+		// friendly-fire frag penalties, TK kicks, bots refusing to shoot.
+		// A unique team string per player (string-compared in the DLL's
+		// FPlayerCanTakeDamage, same 0xB48 field ZM uses for Blue/Red) makes
+		// everyone mutual enemies. Client never sees these: msg_TeamInfo /
+		// msg_ScoreInfo blank them for the flat listenserver-style board.
+		new dmteam[8]
+		formatex(dmteam, 7, "p%d", id)
+		set_pev(id, pev_team, id)
+		set_ts_team_name(id, dmteam)
 		return
 	}
 	if(g_gamemode == MODE_TDM)
@@ -4411,6 +4420,18 @@ stock force_player_side(id)
 public force_player_side_task(id)
 {
 	force_player_side(id)
+}
+
+// The DLL re-runs its Team1..4 auto-assignment at spawn; keep stamping the
+// unique per-player teams back on top.
+public dm_enforce_task()
+{
+	if(g_gamemode != MODE_DM)
+		return
+	new num, players[32]
+	get_players(players, num, "c")
+	for(new i = 0; i < num; i++)
+		force_player_side(players[i])
 }
 
 public fw_PlayerSpawn(id)
