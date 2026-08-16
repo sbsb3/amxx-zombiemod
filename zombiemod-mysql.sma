@@ -14,11 +14,15 @@
 #define FACTORTIME 60
 #define ZM_DROP_TASK 8000
 
-// CTSGun pdata (Linux ts_i386.so). set_pdata_* linuxdiff is 0; these are raw this+ offsets.
+// CTSGun pdata (Linux ts_i386.so). set_pdata_* linuxdiff is 0; offsets are int index (byte/4).
 #define TSGUN_LINUXDIFF		0
 #define TSGUN_OFF_CURWPN	50	// 0xC8 current tsweapon_t
 #define TSGUN_OFF_AMMO0		53	// 0xD4 ammo[type], 16 ints — ReloadWeapon/AddAmmo
+#define TSGUN_OFF_WPNBASE	69	// 0x114 weapon slots (from CTSGun::Reset/DropWeapon)
+#define TSGUN_WPN_INTS		14	// 56 bytes per weapon slot
+#define TSGUN_WPN_SLOTS		37	// DropWeapon accepts weapon ids 1..37
 #define TSGUN_OFF_HUDAMMO	621	// 0x9B4 reserve cache sent in WeaponInfo
+#define ZM_LOADOUT_TASK		8200
 
 // Ammo type per tsweapon_t from compile_weapons_info / Write_* in ts_i386.so
 new const g_ts_ammo_type[38] =
@@ -363,6 +367,7 @@ public plugin_init() {
 	register_concmd("set_user_rendering","rendering",ADMIN_CVAR,"<r> <g> <b> <fx> <render> <amount>")
 	register_concmd("amx_setmodel","setmodel",ADMIN_RCON,"")
 	register_concmd("amx_dumpmodels","dump_models",ADMIN_CFG,"")
+	register_concmd("amx_dumpwpn","dump_weapons",ADMIN_CFG,"")
 
 	register_forward(FM_GetGameDescription,"GameDesc");
 	register_forward(FM_Touch, "fw_ZombieWeaponTouch");
@@ -793,10 +798,10 @@ public event_WeaponInfo(id)
 	new curweapon = read_data(1)
 	g_wpn[id] = curweapon
 
-	if(!player_is_zombie(id) || id == nemesis || !is_user_alive(id))
+	if(g_gamemode != MODE_ZM || !player_is_zombie(id) || id == nemesis || !is_user_alive(id))
 		return
 
-	if(is_unarmed_weapon(curweapon))
+	if(zombie_weapon_allowed(curweapon))
 		return
 
 	if(!task_exists(id + ZM_DROP_TASK))
@@ -810,7 +815,7 @@ public delay_drop(tid)
 		id -= ZM_DROP_TASK
 	if(!is_user_alive(id) || !player_is_zombie(id) || id == nemesis)
 		return
-	disarm_zombie(id)
+	enforce_zombie_loadout(id)
 }
 
 public setmodel(id,level,cid)
@@ -1472,7 +1477,8 @@ public client_PreThink(id)
 		entity_set_int(id,EV_INT_button,entity_get_int(id,EV_INT_button) & ~IN_USE)
 		if(id != nemesis)
 		{
-			if(!is_unarmed_weapon(weaponid) || !is_unarmed_weapon(g_wpn[id]))
+			// Guns still equipped = STUNT_DIVE (middle-click leap). Strip ASAP.
+			if(!zombie_weapon_allowed(weaponid) || !zombie_weapon_allowed(g_wpn[id]))
 			{
 				if(!task_exists(id + ZM_DROP_TASK))
 					set_task(0.05, "delay_drop", id + ZM_DROP_TASK)
@@ -1884,6 +1890,15 @@ public spawn_msg(id)
 	if(is_user_bot(id) || equali(model,"collector-zombie"))
 	{
 		zombie[id] = 1
+		// Strip spawn kit immediately — bots otherwise dive with default guns
+		// for up to a second before spawn_evt runs.
+		if(id != nemesis)
+		{
+			remove_task(id + ZM_LOADOUT_TASK)
+			remove_task(id + ZM_LOADOUT_TASK + 100)
+			set_task(0.1, "zombie_early_loadout", id + ZM_LOADOUT_TASK)
+			set_task(0.4, "zombie_early_loadout", id + ZM_LOADOUT_TASK + 100)
+		}
 		if(!is_user_bot(id))
 		{
 			new origin[3]
@@ -2004,14 +2019,25 @@ public spawn_evt(id)
 			
 		}
 
-		give_kungfu(id)
-		disarm_zombie(id)
+		enforce_zombie_loadout(id)
 	}
 	else
 	{
 		set_user_health(id,get_cvar_num("sv_player_hp"))
 	}
 	return PLUGIN_HANDLED
+}
+
+public zombie_early_loadout(tid)
+{
+	new id = tid - ZM_LOADOUT_TASK
+	if(id > 100)
+		id -= 100
+	if(id < 1 || id > 32)
+		return
+	if(!is_user_alive(id) || !player_is_zombie(id) || id == nemesis)
+		return
+	enforce_zombie_loadout(id)
 }
 public normalz(id)
 {
@@ -2045,8 +2071,10 @@ public recharge()
 				}
 			if(players[i] != nemesis)
 				{
-					if(!is_unarmed_weapon(g_wpn[players[i]]))
-						disarm_zombie(players[i])
+					if(!zombie_weapon_allowed(g_wpn[players[i]]))
+						enforce_zombie_loadout(players[i])
+					else if(get_cvar_num("sv_zombieknife") > 0 && is_unarmed_weapon(g_wpn[players[i]]) && is_user_bot(players[i]))
+						ts_giveweapon(players[i], TSW_CKNIFE, 0, 0)
 				}
 			}
 		if(is_user_bot(players[i])) continue;
@@ -3879,6 +3907,19 @@ stock is_unarmed_weapon(wpn)
 	return (wpn <= 0 || wpn == TSW_KUNG_FU)
 }
 
+// sv_zombieknife 0: kung fu only. >0: combat/seal knife and katana allowed.
+stock zombie_weapon_allowed(wpn)
+{
+	if(is_unarmed_weapon(wpn))
+		return 1
+	if(get_cvar_num("sv_zombieknife") > 0)
+	{
+		if(wpn == TSW_CKNIFE || wpn == TSW_SKNIFE || wpn == TSW_KATANA)
+			return 1
+	}
+	return 0
+}
+
 stock give_kungfu(id)
 {
 	if(!is_user_alive(id) || !is_valid_ent(entz2))
@@ -3893,27 +3934,109 @@ stock give_kungfu(id)
 	DispatchSpawn(entz2)
 }
 
-stock disarm_zombie(id)
+// Clear CTSGun inventory the same way CTSGun::Reset zeros weapon slots
+// (engclient "drop" alone leaves guns equipped — bots then middle-click STUNT_DIVE).
+stock ts_strip_weapons(id)
+{
+	new tsgun = ts_find_tsgun(id)
+	if(!tsgun)
+		return 0
+
+	// Reset: rep stos 0x214 dwords from this+0x114 (weapon status array)
+	for(new i = 0; i < 0x214; i++)
+		set_pdata_int(tsgun, TSGUN_OFF_WPNBASE + i, 0, TSGUN_LINUXDIFF)
+
+	// ammo[16] at 0xD4
+	for(new a = 0; a < 16; a++)
+		set_pdata_int(tsgun, TSGUN_OFF_AMMO0 + a, 0, TSGUN_LINUXDIFF)
+
+	// curwpn + two adjacent ints at 0xC8 / 0xCC / 0xD0
+	set_pdata_int(tsgun, TSGUN_OFF_CURWPN, 0, TSGUN_LINUXDIFF)
+	set_pdata_int(tsgun, TSGUN_OFF_CURWPN + 1, 0, TSGUN_LINUXDIFF)
+	set_pdata_int(tsgun, TSGUN_OFF_CURWPN + 2, 0, TSGUN_LINUXDIFF)
+	set_pdata_int(tsgun, TSGUN_OFF_HUDAMMO, 0, TSGUN_LINUXDIFF)
+
+	engclient_cmd(id, "weapon_0")
+	if(!is_user_bot(id))
+		client_cmd(id, "weapon_0")
+
+	new msgid = get_user_msgid("WeaponInfo")
+	if(msgid)
+	{
+		message_begin(MSG_ONE, msgid, {0,0,0}, id)
+		write_byte(0)
+		write_byte(0)
+		write_short(0)
+		write_byte(0)
+		write_byte(0)
+		message_end()
+	}
+	g_wpn[id] = 0
+	return 1
+}
+
+stock force_kungfu_hands(id)
+{
+	engclient_cmd(id, "weapon_0")
+	if(!is_user_bot(id))
+		client_cmd(id, "weapon_0")
+	new tsgun = ts_find_tsgun(id)
+	if(tsgun)
+		set_pdata_int(tsgun, TSGUN_OFF_CURWPN, 0, TSGUN_LINUXDIFF)
+	g_wpn[id] = 0
+}
+
+// Apply sv_zombieknife loadout: 0 = unarmed kung fu, >0 = combat knife only.
+stock enforce_zombie_loadout(id)
 {
 	if(!is_user_alive(id) || id == nemesis)
 		return
+	if(g_gamemode != MODE_ZM || !player_is_zombie(id))
+		return
+
+	// If weapon_tsgun is not ready yet (common on the first spawn frame),
+	// leave g_dropping clear so the 0.4s retry can run.
+	if(!ts_find_tsgun(id))
+	{
+		force_kungfu_hands(id)
+		return
+	}
+
 	if(g_dropping[id])
 		return
 	g_dropping[id] = 1
-	for(new i = 0; i < 8; i++)
-		engclient_cmd(id, "drop")
-	engclient_cmd(id, "weapon_0")
-	client_cmd(id, "weapon_0")
+
+	if(get_cvar_num("sv_zombieknife") > 0)
+	{
+		ts_strip_weapons(id)
+		ts_giveweapon(id, TSW_CKNIFE, 0, 0)
+		g_wpn[id] = TSW_CKNIFE
+	}
+	else
+	{
+		give_kungfu(id)
+		ts_strip_weapons(id)
+		force_kungfu_hands(id)
+	}
+
 	if(!task_exists(id + 8100))
-		set_task(0.2, "clear_dropping", id + 8100)
+		set_task(0.25, "clear_dropping", id + 8100)
+}
+
+stock disarm_zombie(id)
+{
+	enforce_zombie_loadout(id)
 }
 
 public clear_dropping(tid)
 {
 	new id = tid - 8100
 	g_dropping[id] = 0
-	if(is_user_alive(id) && player_is_zombie(id) && id != nemesis)
-		client_cmd(id, "weapon_0")
+	if(!is_user_alive(id) || !player_is_zombie(id) || id == nemesis)
+		return
+	if(get_cvar_num("sv_zombieknife") > 0)
+		return
+	force_kungfu_hands(id)
 }
 
 stock vault_load(id, const authid[])
@@ -4103,6 +4226,41 @@ public dump_models()
 	return PLUGIN_HANDLED
 }
 
+public dump_weapons()
+{
+	new num, players[32]
+	get_players(players, num)
+	server_print("[ZM-WPN] dump %d players knife_cvar=%d mode=%d", num, get_cvar_num("sv_zombieknife"), g_gamemode)
+	for(new i = 0; i < num; i++)
+	{
+		new id = players[i]
+		new name[32], clip, ammo, mode, extra
+		get_user_name(id, name, 31)
+		if(!is_user_alive(id))
+		{
+			server_print("[ZM-WPN] %s dead bot=%d zom=%d", name, is_user_bot(id), player_is_zombie(id))
+			continue
+		}
+		new wpn = ts_getuserwpn(id, clip, ammo, mode, extra)
+		new tsgun = ts_find_tsgun(id)
+		new cur = tsgun ? get_pdata_int(tsgun, TSGUN_OFF_CURWPN, TSGUN_LINUXDIFF) : -1
+		new slotguns = 0
+		if(tsgun)
+		{
+			for(new w = 1; w <= TSGUN_WPN_SLOTS; w++)
+			{
+				new base = TSGUN_OFF_WPNBASE + w * TSGUN_WPN_INTS
+				// first byte of slot is occupancy flag (see CTSGun::DropWeapon)
+				if(get_pdata_int(tsgun, base, TSGUN_LINUXDIFF))
+					slotguns++
+			}
+		}
+		server_print("[ZM-WPN] %s bot=%d zom=%d alive wpn=%d g_wpn=%d cur=%d slots=%d tsgun=%d",
+			name, is_user_bot(id), player_is_zombie(id), wpn, g_wpn[id], cur, slotguns, tsgun)
+	}
+	return PLUGIN_HANDLED
+}
+
 stock same_side(a, b)
 {
 	if(a < 1 || b < 1 || a > 32 || b > 32)
@@ -4173,6 +4331,11 @@ public fw_PlayerSpawn(id)
 		return HAM_IGNORED
 	force_player_side(id)
 	set_task(0.2, "force_player_side_task", id)
+	if(g_gamemode == MODE_ZM && player_is_zombie(id) && id != nemesis)
+	{
+		remove_task(id + ZM_LOADOUT_TASK)
+		set_task(0.05, "zombie_early_loadout", id + ZM_LOADOUT_TASK)
+	}
 	return HAM_IGNORED
 }
 
