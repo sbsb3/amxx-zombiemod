@@ -4,11 +4,15 @@
 #include <engine_stocks>
 #include <tsfun>
 #include <tsx>
+#include <tsconst>
 #include <fakemeta>
 #include <fun>
 #include <dbi>
+#include <nvault>
+#include <hamsandwich>
 
 #define FACTORTIME 60
+#define ZM_DROP_TASK 8000
 /*
 new tsweaponammo[38] = {0,17,15,32,7,30,30,30,15,12,12,20,7,30,20,30,32,20,5,40,8,16,15,25,1,25,8,18,17,0,20,5,100,2,1,1,1,20}
 new tsweaponid[38][32] = {"Kung Fu","Glock 18","Beretta 92F","Mini-Uzi","Benelli M3","M4A1","MP5SD","MP5K","Beretta 92F","SOCOM-MK23","SOCOM-MK23","USAS-12","Desert Eagle","AK47","Five-seveN","STEYR-AUG","Mini-Uzi","Skorpion","Barrett M82A1","MP7-PDW","SPAS-12","Golden Colts","Glock-20C","UMP","M61 Grenade","Combat Knife","Mossberg 500","M16A4","Ruger-MK1","Kung Fu","Five-seveN","Raging Bull","M60E3","Sawed-off","Katana","Seal Knife","Contender G2","Skorpion"
@@ -30,6 +34,9 @@ new playersfactor[34]=0;
 new hisfactor[33];
 
 new nemesis = 0
+new g_vault = -1
+new g_wpn[33]
+new g_dropping[33]
 
 
 public findavailable(id)
@@ -200,7 +207,7 @@ public create_ambient(porigin[3],targetname[],vol[],pitch[],spawnflags,file[])
 }
 
 new line[33]
-new Sql:dbc
+new Sql:dbc = SQL_FAILED
 new Result:result
 stock explode( output[][], input[], delimiter)
 {
@@ -275,6 +282,7 @@ new added[33] = 0
 new ztype[33] = 0;
 
 
+
 /*
 	message_begin(MSG_ONE, get_user_msgid("SayText"), {0,0,0}, id)
 	write_byte(id)
@@ -316,7 +324,7 @@ new g_internal_hour;
 new dolights=0;
 new lighton=1;
 public plugin_init() {
-	register_plugin("Zombie Mod","v1.596","StevenlAFl")
+	register_plugin("Zombie Mod","v1.599","StevenlAFl")
 
 	register_concmd("amx_setfrags","setfrags",ADMIN_CVAR,"<name> <frags>")
 	register_concmd("amx_invis","amx_invis",ADMIN_CFG,"<name> <0/1>")
@@ -336,8 +344,11 @@ public plugin_init() {
 	register_concmd("amx_setexp","amx_setexp",ADMIN_CVAR,"<name> <level>")
 	register_concmd("set_user_rendering","rendering",ADMIN_CVAR,"<r> <g> <b> <fx> <render> <amount>")
 	register_concmd("amx_setmodel","setmodel",ADMIN_RCON,"")
+	register_concmd("amx_dumpmodels","dump_models",ADMIN_CFG,"")
 
 	register_forward(FM_GetGameDescription,"GameDesc");
+	register_forward(FM_Touch, "fw_ZombieWeaponTouch");
+	register_forward(FM_ClientUserInfoChanged, "fw_ClientUserInfoChanged");
 
 /*	register_clcmd("say /weapon", "defaultgun", 0, "Spawns player a random gun")
 	register_clcmd("say /laser", "laserer", -1)
@@ -447,8 +458,11 @@ public plugin_init() {
 	register_cvar("sv_superjump","1")
 	register_cvar("sv_kungfu","1")
 	register_cvar("sv_useopen","1")
+	register_cvar("sv_ammo_per_frag","1")
 
 	register_statsfwd(XMF_DAMAGE)
+	RegisterHam(Ham_TakeDamage, "player", "fw_TakeDamage")
+	RegisterHam(Ham_TraceAttack, "player", "fw_TraceAttack")
 	register_forward(FM_SetClientMaxspeed, "forward_SetClientMaxspeed")
 	register_event("DeathMsg","death_msg","a")
 	register_event("ResetHUD","spawn_msg", "be")
@@ -512,10 +526,18 @@ public plugin_init() {
 	set_task(360.0,"nemesis2",0,"",0,"b")
 	set_task(1.0,"sql_init")
 	
-	set_msg_block(122,1) //round time
-	set_msg_block(66,1) //selammo
-	set_msg_block(90,1) //hideweapon
-	set_msg_block(82,1) // teaminfo
+	new msgid
+	msgid = get_user_msgid("RoundTime")
+	if(msgid) set_msg_block(msgid, BLOCK_SET)
+	msgid = get_user_msgid("SelAmmo")
+	if(msgid) set_msg_block(msgid, BLOCK_SET)
+	msgid = get_user_msgid("HideWeapon")
+	if(msgid) set_msg_block(msgid, BLOCK_SET)
+	msgid = get_user_msgid("TeamInfo")
+	if(msgid) set_msg_block(msgid, BLOCK_NOT)
+
+	apply_team_cvars()
+	set_task(2.0, "force_all_sides", 0, "", 0, "b")
 	new map[64]
 	get_mapname(map,63)
 	server_print("%s",map)
@@ -534,6 +556,20 @@ public plugin_init() {
 	get_configsdir(configsDir, 63)
 	
 	server_cmd("exec %s/ZombieMod/zombiemod_config.cfg",configsDir)
+}
+
+public plugin_end()
+{
+	if(g_vault != -1)
+	{
+		nvault_close(g_vault)
+		g_vault = -1
+	}
+	if(dbc != SQL_FAILED)
+	{
+		dbi_close(dbc)
+		dbc = SQL_FAILED
+	}
 }
 
 public GameDesc()
@@ -617,25 +653,30 @@ public forward_SetClientMaxspeed(id, Float:speed)
 }
 public event_WeaponInfo(id)
 {
+	if(id < 1 || id > 32 || !is_user_connected(id))
+		return
+
 	new curweapon = read_data(1)
-	
-	if(get_user_team(id) == 2)
-	{
-		if(curweapon != 25 && curweapon != 34 && curweapon != 35)
-		if(is_user_bot(id))
-		{
-			if(id != nemesis) set_task(0.1, "delay_drop", id)
-		}
-		else
-		{
-			set_task(0.1, "delay_drop", id)//console_cmd(id, "drop")
-		}
-	}
+	g_wpn[id] = curweapon
+
+	if(!player_is_zombie(id) || id == nemesis || !is_user_alive(id))
+		return
+
+	if(is_unarmed_weapon(curweapon))
+		return
+
+	if(!task_exists(id + ZM_DROP_TASK))
+		set_task(0.05, "delay_drop", id + ZM_DROP_TASK)
 }
 
-public delay_drop(id)
+public delay_drop(tid)
 {
-	engclient_cmd(id, "drop")
+	new id = tid
+	if(id > ZM_DROP_TASK)
+		id -= ZM_DROP_TASK
+	if(!is_user_alive(id) || !player_is_zombie(id) || id == nemesis)
+		return
+	disarm_zombie(id)
 }
 
 public setmodel(id,level,cid)
@@ -872,6 +913,14 @@ public lologram()
 }
 public sql_init()
 {
+	apply_team_cvars()
+	if(g_vault == -1)
+		g_vault = nvault_open("zombiemod")
+	if(g_vault == -1)
+		server_print("[ZombieMod] Could not open nVault storage^n")
+	else
+		server_print("[ZombieMod] nVault storage ready^n")
+
 	new host[64], username[33], password[32], dbname[32], error[32]
  	get_cvar_string("zombiemod_mysql_host",host,64) 
     	get_cvar_string("zombiemod_mysql_user",username,32)
@@ -880,12 +929,12 @@ public sql_init()
 	dbc = dbi_connect(host,username,password,dbname,error,32)
 	if (dbc == SQL_FAILED)
 	{
-		server_print("[ZombieMod] Could not connect to MySQL. Reason: %s!^n",error)
+		server_print("[ZombieMod] Could not connect to MySQL. Reason: %s. Using nVault.^n",error)
 	}
 	else
 	{
 		server_print("[ZombieMod] Connected successfully to MySQL^n")
-		server_cmd( "mp_teamplay 1" );
+		dbi_query(dbc, "CREATE TABLE IF NOT EXISTS users (steamid varchar(64) NOT NULL, level int(11) DEFAULT 1, exp int(11) DEFAULT 0, name varchar(64) DEFAULT NULL, PRIMARY KEY (steamid))")
 
 		new query[256]
 		get_mapname(query,64)
@@ -1280,60 +1329,28 @@ new zombie_throwknives = 0;
 public client_PreThink(id)
 	{
 	if(!is_user_alive(id)) return PLUGIN_CONTINUE
+	force_player_side(id)
 
-	if(get_cvar_num("sv_zombieknife") <= 0) return PLUGIN_CONTINUE
-	
 	new clip, amm, mode, extra
 	new weaponid = ts_getuserwpn(id, clip, amm, mode, extra)
-	/*if(weaponid == 24)
+	if(player_is_zombie(id) || is_user_bot(id))
 		{
-		if(no[id] == 0) 
-			client_cmd(id,"drop");
-		else
-			{
-			no[id] = 1
-			set_task(0.5,"setno",id)
-			}
-		return PLUGIN_CONTINUE
-		}*/
-	if(zombie[id])
-		{
-		/*if(!is_user_bot(id))
-		{
-			if(weaponid == 25 || weaponid == 35 || weaponid == 34)
-			{
-			}
-			else engclient_cmd(id, "drop")
-		}*/
+		block_same_side_attack(id)
 		entity_set_int(id,EV_INT_button,entity_get_int(id,EV_INT_button) & ~IN_USE)
-		/*if(!get_cvar_num("weaponrestriction"))
+		if(id != nemesis)
+		{
+			if(!is_unarmed_weapon(weaponid) || !is_unarmed_weapon(g_wpn[id]))
 			{
-			new string[33]
-			entity_get_string(id,EV_SZ_viewmodel,string,31)
-			if(!equal(string,"models/v_knife.mdl") && !equal(string,"models/v_sealknife.mdl") && !equal(string,"models/v_katana.mdl") && !equal(string,""))
-				{
-				client_cmd(id,"drop")
-				}
-			}*/
-		if(zombie_throwknives) return PLUGIN_CONTINUE
-		new bufferstop = entity_get_int(id,EV_INT_button)
-		if((bufferstop & IN_ATTACK2) && (entity_get_int(id,EV_INT_flags) & ~IN_ATTACK))
-			{
-			/*new string[33]
-			entity_get_string(id,EV_SZ_viewmodel,string,31)
-			if(equal(string,"models/v_knife.mdl") || equal(string,"models/v_sealknife.mdl"))
-				{
-				entity_set_int(id,EV_INT_button,entity_get_int(id,EV_INT_button) & ~IN_ATTACK2)
-				client_cmd(id,"+attack;wait;-attack")
-				}*/
-			if(weaponid == 25 || weaponid == 35 || weaponid == 34)
-				{
-				entity_set_int(id,EV_INT_button,entity_get_int(id,EV_INT_button) & ~IN_ATTACK2)
-				client_cmd(id,"+attack;wait;-attack")
-				}
+				if(!task_exists(id + ZM_DROP_TASK))
+					set_task(0.05, "delay_drop", id + ZM_DROP_TASK)
 			}
+			new zbtn = entity_get_int(id,EV_INT_button)
+			if(zbtn & IN_ATTACK2)
+				entity_set_int(id,EV_INT_button,zbtn & ~IN_ATTACK2)
+		}
 		return PLUGIN_CONTINUE
 		}
+	block_same_side_attack(id)
 	if(no[id] == 0 && get_cvar_num("sv_useopen") > 0)
 	{
 		new bufferstop = entity_get_int(id,EV_INT_button)
@@ -1502,6 +1519,11 @@ public amx_giveweapon(id,level,cid) {
 
 	new targetid = cmd_target(id,arg,0)
 	if(!targetid) return PLUGIN_HANDLED
+	if(player_is_zombie(targetid) && targetid != nemesis)
+	{
+		client_print(id,print_console,"Zombies stay unarmed.")
+		return PLUGIN_HANDLED
+	}
 	ts_giveweapon(targetid,str_to_num(arg2),str_to_num(arg3),str_to_num(arg4))
 	return PLUGIN_HANDLED
 }
@@ -1714,13 +1736,10 @@ public spawn_msg(id)
 	curgravity[id] = gravity[id]
 	curspeed[id] = speed[id]
 
-	if(is_user_bot(id))
-	{
-		set_user_info(id,"model","collector-zombie")
-	}
+	force_player_side(id)
 	new model[32]
 	get_user_info(id,"model",model,31)
-	if(equali(model,"collector-zombie") || get_user_team(id) == 2)
+	if(equali(model,"collector-zombie") || get_user_team(id) == 2 || is_user_bot(id))
 	{
 		zombie[id] = 1
 		if(!is_user_bot(id))
@@ -1781,6 +1800,7 @@ public spawn_evt(id)
 		set_task(0.5,"spawn_evt",id)
 		return PLUGIN_HANDLED
 	}
+	force_player_side(id)
 	//server_print("%i %i",thirdperson[id],zombie[id])
 	SetGlobalFmt(id)
 	if(!zombie[id])
@@ -1823,11 +1843,6 @@ public spawn_evt(id)
 		if(is_user_bot(id))
 		{
 			set_user_health(id,get_cvar_num("sv_computerzombie_hp"))
-			if(ztype[id]==1)
-			{
-				ts_giveweapon(id,34,0,0)
-				return PLUGIN_HANDLED
-			}
 		}
 		else
 		{
@@ -1842,25 +1857,12 @@ public spawn_evt(id)
 				DispatchKeyValue(entz,"pwupduration","1")
 				DispatchSpawn(entz)
 			}
-			/*if(get_cvar_num("sv_kungfu"))
-			{
-				new fmt[64]
-				format(fmt,63,"%i %i %i",origin[0],origin[1],origin[2])
-				DispatchKeyValue(entz2,"pwuptype","4")
-				DispatchKeyValue(entz2,"origin",fmt)
-				DispatchKeyValue(entz2,"pwupduration","1")
-				DispatchSpawn(entz2)
-				set_task(1.0,"normalz",id)
-			}*/
 			set_user_health(id,get_cvar_num("sv_playerzombie_hp")+hpmodifier[id])
 			
 		}
 
-		ts_giveweapon(id,25,0,0)
-		ts_giveweapon(id,25,0,0)
-		ts_giveweapon(id,25,0,0)
-		ts_giveweapon(id,25,0,0)
-		ts_giveweapon(id,25,0,0)
+		give_kungfu(id)
+		disarm_zombie(id)
 	}
 	else
 	{
@@ -1887,7 +1889,6 @@ public recharge()
 	expmult = get_cvar_float("sv_expmultiplication")
 	zombie_throwknives = get_cvar_num("sv_zombie_throwknives")
 	player_throwknives = get_cvar_num("sv_player_throwknives")
-	new lol = get_cvar_num("sv_zombieknife")
 	new num, players[32]
 	get_players(players,num,"a")
 	for( new i = 0;  i < num; i++ )
@@ -1899,10 +1900,10 @@ public recharge()
 				{
 				set_user_health(players[i],(hp+4))
 				}
-			if(lol > 0 && is_user_bot(players[i]) && players[i] != nemesis)
+			if(players[i] != nemesis)
 				{
-					if(ztype[players[i]]==1) ts_giveweapon(players[i],34,0,0)
-					else ts_giveweapon(players[i],25,0,0)
+					if(!is_unarmed_weapon(g_wpn[players[i]]))
+						disarm_zombie(players[i])
 				}
 			}
 		if(is_user_bot(players[i])) continue;
@@ -1986,8 +1987,7 @@ public hudmsg()
 		if(is_user_admin(players[i]) && ts_get_message(players[i]) != TSMSG_THEONE)
 			ts_set_message(players[i],TSMSG_THEONE)
 		set_hudmessage(get_cvar_num("hud_red"),get_cvar_num("hud_green"),get_cvar_num("hud_blue"),get_cvar_float("hud_pos_x"),get_cvar_float("hud_pos_y"),0,0.0,99.9,0.0,0.0,2)
-		if (dbc == SQL_FAILED) format(fmt,299," SQL Database offline.^n Your levels are still saved.^n")
-		else format(fmt,299," Level: %i^n Expirience: %i^n Next Level: %i (%i)^n",g_level[players[i]],exp[players[i]],((g_level[players[i]]*skillfactor)-exp[players[i]]),(g_level[players[i]]*skillfactor));
+		format(fmt,299," Level: %i^n Expirience: %i^n Next Level: %i (%i)^n",g_level[players[i]],exp[players[i]],((g_level[players[i]]*skillfactor)-exp[players[i]]),(g_level[players[i]]*skillfactor));
 
 		format(fmt,299,"%s%s",fmt,globalfmt[players[i]])
 		
@@ -2266,9 +2266,10 @@ new parasited[33]
 public client_authorized(id) {
 	if(is_user_bot(id))
 	{
-		set_user_info(id,"model","collector-zombie")
-		return PLUGIN_HANDLED
+		force_player_side(id)
+		return PLUGIN_CONTINUE
 	}
+	force_player_side(id)
 	frags[id] = 0
 	laser[id] = 0
 	silencer[id] = 0
@@ -2278,20 +2279,28 @@ public client_authorized(id) {
 	thirdperson[id] = 0
 	parasited[id] = 0
 	line[id] = 0;
-	if (dbc == SQL_FAILED)
-	{
-		g_level[id] = 98;
-		checksetskills(id)
-		return PLUGIN_HANDLED
-	}
 	new authid[33]
 	get_user_authid(id,authid,32)
-	new query[256]
-
 	new name[64]
 	get_user_name(id,name,63)
+	new auth_esc[64], name_esc[128]
+	sql_escape(authid, auth_esc, 63)
+	sql_escape(name, name_esc, 127)
 
-	format( query, 255, "SELECT level,exp FROM users WHERE steamid='%s'",authid)
+	if (dbc == SQL_FAILED)
+	{
+		if(!vault_load(id, authid))
+		{
+			g_level[id] = 1
+			exp[id] = 0
+		}
+		checksetskills(id)
+		curslots[id] = slots[id]
+		line[id] = 1
+		return PLUGIN_CONTINUE
+	}
+	new query[256]
+	format( query, 255, "SELECT level,exp FROM users WHERE steamid='%s'",auth_esc)
 	result = dbi_query(dbc,query)
 
 	if( dbi_nextrow( result ) > 0 )
@@ -2312,7 +2321,7 @@ public client_authorized(id) {
 	}
 	else
 	{
-		format(query,255,"INSERT INTO users VALUES('%s',1,0,'%s')",authid,name)
+		format(query,255,"INSERT INTO users VALUES('%s',1,0,'%s')",auth_esc,name_esc)
 		dbi_query(dbc,query)
 		g_level[id] = 1
 		exp[id] = 0
@@ -2324,8 +2333,8 @@ public client_authorized(id) {
 		line[id] = 1
 	}
 	dbi_free_result(result)
-	//set_task(60.0,"save",id,"",0,"b")
-	return PLUGIN_HANDLED
+	vault_save_user(id, authid)
+	return PLUGIN_CONTINUE
 }
 public client_putinserver(id)
 {
@@ -2345,7 +2354,8 @@ public client_disconnect(id) {
 		radio = 0
 	}*/
 	line[id] = 0
-	playersfactor[(hisfactor[id]/timefactor)] = 0;
+	if(timefactor > 0)
+		playersfactor[(hisfactor[id]/timefactor)] = 0;
 	if(!is_user_bot(id)) discounter++
 	new map[64]
 	get_mapname(map,64)
@@ -2533,6 +2543,8 @@ public death_msg() {
 		}
 	}
 	frags[attacker]++
+	if(attacker && attacker != id && is_user_connected(attacker) && !player_is_zombie(attacker) && player_is_zombie(id))
+		reward_frag_ammo(attacker)
 	if(frags[attacker] >= 50 && equali(objective[attacker],"Kill 50 zombies") && objectivedone[attacker] == 0) {
 		set_objectivestatus(attacker,1)
 		frags[attacker] = 0
@@ -2557,6 +2569,7 @@ public client_infochanged(id) {
 		}
 	}
 	else parasited[id] = 0
+	force_player_side(id)
 }
 public saveall() {
 	new num, players[32]
@@ -2567,18 +2580,25 @@ public saveall() {
 	return PLUGIN_HANDLED
 }
 public save(id) {
-	if(!is_user_connected(id)) return PLUGIN_HANDLED
+	if(!is_user_connected(id) || is_user_bot(id)) return PLUGIN_HANDLED
 
 	new authid[33], name[64]
 	get_user_authid(id,authid,32)
 	get_user_name(id,name,63)
 
-	replace_all(name, 63, "'", "\'")
-	
-	if(!line[id] || exp[id] == 0 || g_level[id] == 0) return PLUGIN_HANDLED
+	if(!line[id] || g_level[id] == 0) return PLUGIN_HANDLED
+
+	vault_save_user(id, authid)
+
+	if(dbc == SQL_FAILED)
+		return PLUGIN_HANDLED
+
+	new auth_esc[64], name_esc[128]
+	sql_escape(authid, auth_esc, 63)
+	sql_escape(name, name_esc, 127)
 
 	new query[256]
-	format( query, 255, "UPDATE users SET level='%i', exp='%i', name=^"%s^"  WHERE steamid='%s'",g_level[id],exp[id],name,authid)
+	format( query, 255, "UPDATE users SET level='%i', exp='%i', name='%s' WHERE steamid='%s'",g_level[id],exp[id],name_esc,auth_esc)
 	dbi_query(dbc,query)
 	server_print("UserID %i updated in database",id)
 	return PLUGIN_HANDLED
@@ -3184,14 +3204,8 @@ public defaultgun(id) {
 
 	if(zombie[id])
 	{
-		new weapon = random(2)
-		if(weapon == 0) weapon = 25
-		if(weapon == 1) weapon = 35
-		if(weapon == 2) weapon = 34
-		
-		//client_print(id, print_chat, "Random Melee weapon given")
-		info_add_msg(id,"Random Melee weapon given")
-		ts_giveweapon(id,weapon,1,0);
+		info_add_msg(id,"Zombies cannot use weapons");
+		disarm_zombie(id)
 		return PLUGIN_HANDLED
 	} 
 	new extra = random(31)
@@ -3214,12 +3228,9 @@ public givegun(id,weapon,lvl,slot)
 	{
 		if(zombie[id])
 		{
-			if(weapon != 25 && weapon != 35 && weapon != 34)
-			{
-				//client_print(id,print_chat,"Zombies cannot obtain guns")
-				info_add_msg(id,"Zombies cannot obtain guns");
-				return 0
-			}
+			info_add_msg(id,"Zombies cannot obtain weapons");
+			disarm_zombie(id)
+			return 0
 		}
 		if(!is_user_alive(id))
 		{
@@ -3668,4 +3679,256 @@ public advance_light()
 	}
 	
 	return PLUGIN_HANDLED
+}
+
+stock sql_escape(const input[], output[], len)
+{
+	copy(output, len, input)
+	replace_all(output, len, "\\", "\\\\")
+	replace_all(output, len, "'", "\\'")
+}
+
+stock player_is_zombie(id)
+{
+	if(id < 1 || id > 32)
+		return 0
+	if(zombie[id])
+		return 1
+	if(!is_user_connected(id))
+		return 0
+	if(get_user_team(id) == 2)
+		return 1
+	new model[32]
+	get_user_info(id, "model", model, 31)
+	return equali(model, "collector-zombie")
+}
+
+stock is_unarmed_weapon(wpn)
+{
+	return (wpn <= 0 || wpn == TSW_KUNG_FU)
+}
+
+stock give_kungfu(id)
+{
+	if(!is_user_alive(id) || !is_valid_ent(entz2))
+		return
+	new origin[3]
+	get_user_origin(id, origin)
+	new fmt[64]
+	format(fmt, 63, "%i %i %i", origin[0], origin[1], origin[2])
+	DispatchKeyValue(entz2, "pwuptype", "4")
+	DispatchKeyValue(entz2, "origin", fmt)
+	DispatchKeyValue(entz2, "pwupduration", "1")
+	DispatchSpawn(entz2)
+}
+
+stock disarm_zombie(id)
+{
+	if(!is_user_alive(id) || id == nemesis)
+		return
+	if(g_dropping[id])
+		return
+	g_dropping[id] = 1
+	for(new i = 0; i < 8; i++)
+		engclient_cmd(id, "drop")
+	engclient_cmd(id, "weapon_0")
+	client_cmd(id, "weapon_0")
+	if(!task_exists(id + 8100))
+		set_task(0.2, "clear_dropping", id + 8100)
+}
+
+public clear_dropping(tid)
+{
+	new id = tid - 8100
+	g_dropping[id] = 0
+	if(is_user_alive(id) && player_is_zombie(id) && id != nemesis)
+		client_cmd(id, "weapon_0")
+}
+
+stock vault_load(id, const authid[])
+{
+	if(g_vault == -1)
+		return 0
+	new data[64]
+	if(!nvault_get(g_vault, authid, data, 63))
+		return 0
+	new slvl[16], sexp[16]
+	parse(data, slvl, 15, sexp, 15)
+	g_level[id] = str_to_num(slvl)
+	exp[id] = str_to_num(sexp)
+	if(g_level[id] < 1) g_level[id] = 1
+	if(g_level[id] > 99) g_level[id] = 99
+	if(exp[id] < 0) exp[id] = 0
+	return 1
+}
+
+stock vault_save_user(id, const authid[])
+{
+	if(g_vault == -1 || !authid[0])
+		return
+	new data[64]
+	formatex(data, 63, "%d %d", g_level[id], exp[id])
+	nvault_set(g_vault, authid, data)
+}
+
+public fw_ZombieWeaponTouch(ent, id)
+{
+	if(id < 1 || id > 32 || !is_user_alive(id) || !player_is_zombie(id) || id == nemesis)
+		return FMRES_IGNORED
+	if(!pev_valid(ent))
+		return FMRES_IGNORED
+	new classname[32]
+	pev(ent, pev_classname, classname, 31)
+	if(equal(classname, "ts_groundweapon"))
+		return FMRES_SUPERCEDE
+	return FMRES_IGNORED
+}
+
+stock apply_team_cvars()
+{
+	server_cmd("mp_teamplay 1")
+	server_cmd("mp_friendlyfire 0")
+	server_cmd("mp_teamlist ^"seal;collector-zombie^"")
+	server_cmd("mp_teammodels ^"seal;collector-zombie^"")
+}
+
+stock set_ts_model(id, const model[])
+{
+	new cur[32]
+	get_user_info(id, "model", cur, 31)
+	if(equali(cur, model))
+		return
+	set_user_info(id, "model", model)
+	engclient_cmd(id, "model", model)
+	if(equali(model, "collector-zombie"))
+		engclient_cmd(id, "jointeam", "2")
+	else
+		engclient_cmd(id, "jointeam", "1")
+}
+
+public dump_models()
+{
+	new num, players[32]
+	get_players(players, num)
+	for(new i = 0; i < num; i++)
+	{
+		new id = players[i]
+		new name[32], model[32]
+		get_user_name(id, name, 31)
+		get_user_info(id, "model", model, 31)
+		server_print("[ZM] %s bot=%d team=%d model=%s", name, is_user_bot(id), get_user_team(id), model)
+	}
+	return PLUGIN_HANDLED
+}
+
+stock same_side(a, b)
+{
+	if(a < 1 || b < 1 || a > 32 || b > 32)
+		return 0
+	if(is_user_bot(a) && is_user_bot(b))
+		return 1
+	return player_is_zombie(a) == player_is_zombie(b)
+}
+
+stock force_player_side(id)
+{
+	if(id < 1 || id > 32 || !is_user_connected(id))
+		return
+	if(is_user_bot(id))
+	{
+		zombie[id] = 1
+		set_ts_model(id, "collector-zombie")
+		set_pev(id, pev_team, 2)
+		return
+	}
+	if(get_cvar_num("sv_parasite") > 0 && parasited[id])
+	{
+		zombie[id] = 1
+		return
+	}
+	zombie[id] = 0
+	new model[32]
+	get_user_info(id, "model", model, 31)
+	if(!equali(model, "seal"))
+		set_ts_model(id, "seal")
+	set_pev(id, pev_team, 1)
+}
+
+public fw_ClientUserInfoChanged(id)
+{
+	if(id < 1 || id > 32 || !is_user_connected(id))
+		return FMRES_IGNORED
+	force_player_side(id)
+	return FMRES_IGNORED
+}
+
+public force_all_sides()
+{
+	new msgid = get_user_msgid("TeamInfo")
+	if(msgid) set_msg_block(msgid, BLOCK_NOT)
+	new num, players[32]
+	get_players(players, num)
+	for(new i = 0; i < num; i++)
+		force_player_side(players[i])
+}
+
+stock block_same_side_attack(id)
+{
+	new tid, body
+	get_user_aiming(id, tid, body, 2048)
+	if(tid < 1 || tid > 32 || tid == id || !is_user_alive(tid))
+		return
+	if(!same_side(id, tid))
+		return
+	new btn = entity_get_int(id, EV_INT_button)
+	entity_set_int(id, EV_INT_button, btn & ~(IN_ATTACK | IN_ATTACK2))
+}
+
+public fw_TraceAttack(victim, attacker, Float:damage, Float:direction[3], tracehandle, damagebits)
+{
+	if(victim < 1 || victim > 32 || attacker < 1 || attacker > 32)
+		return HAM_IGNORED
+	if(victim == attacker)
+		return HAM_IGNORED
+	if(same_side(victim, attacker))
+		return HAM_SUPERCEDE
+	return HAM_IGNORED
+}
+
+public fw_TakeDamage(victim, inflictor, attacker, Float:damage, damagebits)
+{
+	if(victim < 1 || victim > 32 || attacker < 1 || attacker > 32)
+		return HAM_IGNORED
+	if(victim == attacker)
+		return HAM_IGNORED
+	if(same_side(victim, attacker))
+		return HAM_SUPERCEDE
+	return HAM_IGNORED
+}
+
+public reward_frag_ammo(id)
+{
+	if(!is_user_alive(id) || player_is_zombie(id))
+		return
+	new clip, ammo, mode, extra
+	new wpn = ts_getuserwpn(id, clip, ammo, mode, extra)
+	if(wpn < 1 || wpn > 36)
+		wpn = g_wpn[id]
+	if(is_unarmed_weapon(wpn) || wpn == 24 || wpn == 25 || wpn == 29 || wpn == 34 || wpn == 35)
+		return
+	static clipsize[37] = {0,17,15,32,7,30,30,30,15,12,12,20,7,30,20,30,32,20,5,40,8,16,15,25,1,0,8,30,17,0,20,5,100,2,0,0,1}
+	new addclips = get_cvar_num("sv_ammo_per_frag")
+	if(addclips < 1)
+		addclips = 1
+	new mag = (wpn < 37) ? clipsize[wpn] : 15
+	if(mag < 1)
+		mag = 15
+	new give = mag * addclips
+	new newammo = ammo + give
+	if(newammo > 250)
+		newammo = 250
+	if(newammo <= ammo)
+		return
+	if(ts_setuserammo(id, wpn, newammo))
+		client_print(id, print_center, "+%d ammo", give)
 }
