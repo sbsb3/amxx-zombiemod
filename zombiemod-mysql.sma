@@ -580,6 +580,8 @@ public plugin_init() {
 		set_task(2.0, "force_all_sides", 0, "", 0, "b")
 	else if(g_gamemode == MODE_TDM)
 		set_task(2.0, "tdm_balance_task", 0, "", 0, "b")
+	if(g_gamemode != MODE_ZM)
+		set_task(10.0, "task_bot_ammo_refill", 0, "", 0, "b")
 	new map[64]
 	get_mapname(map,63)
 	server_print("%s",map)
@@ -2743,8 +2745,13 @@ public death_msg() {
 		}
 	}
 	frags[attacker]++
-	if(attacker && attacker != id && is_user_connected(attacker) && !player_is_zombie(attacker) && player_is_zombie(id))
-		reward_frag_ammo(attacker)
+	// ZM only pays ammo for zombie kills; DM/TDM have no other ammo source,
+	// so there every frag refills.
+	if(attacker && attacker != id && is_user_connected(attacker))
+	{
+		if(g_gamemode != MODE_ZM || (!player_is_zombie(attacker) && player_is_zombie(id)))
+			reward_frag_ammo(attacker)
+	}
 	if(frags[attacker] >= 50 && equali(objective[attacker],"Kill 50 zombies") && objectivedone[attacker] == 0) {
 		set_objectivestatus(attacker,1)
 		frags[attacker] = 0
@@ -4111,6 +4118,12 @@ stock apply_team_cvars_for(mode)
 	if(mode == MODE_DM)
 	{
 		set_cvar_num("mp_teamplay", 0)
+		// The engine ignores these with teamplay off, but RCBot dresses its
+		// bots from mp_teammodels — leave the ZM pair here and the bots keep
+		// spawning as collector-zombie in FFA (and the DM scoreboard groups
+		// players by model name, so it reads as fake teams too).
+		set_cvar_string("mp_teamlist", "team1;team2;team3;team4")
+		set_cvar_string("mp_teammodels", "seal;merc|gordon;laurence|agent|hitman;castor")
 		return
 	}
 	if(mode == MODE_TDM)
@@ -4449,6 +4462,42 @@ public reward_frag_ammo(id)
 		return
 	if(ts_setuserammo(id, wpn, newammo))
 		client_print(id, print_center, "+%d ammo", give)
+}
+
+// RCBot never buys ammo and TS maps have none lying around, so outside
+// Zombie Mod a dry bot just clicks an empty gun forever. Keep bot reserves
+// stocked, and when one is fully dry re-give its weapon (bots reload
+// unreliably, so a fresh clip beats waiting for them to press reload).
+public task_bot_ammo_refill()
+{
+	if(g_gamemode == MODE_ZM)
+		return
+	static clipsize[37] = {0,17,15,32,7,30,30,30,15,12,12,20,7,30,20,30,32,20,5,40,8,16,15,25,1,0,8,30,17,0,20,5,100,2,0,0,1}
+	new num, players[32]
+	get_players(players, num, "c")
+	for(new i = 0; i < num; i++)
+	{
+		new id = players[i]
+		if(!is_user_bot(id) || !is_user_alive(id))
+			continue
+		new clip, ammo, firemode, extra
+		new wpn = ts_getuserwpn(id, clip, ammo, firemode, extra)
+		if(wpn < 1 || wpn > 36 || is_unarmed_weapon(wpn) || wpn == 24 || wpn == 25 || wpn == 29 || wpn == 34 || wpn == 35)
+			continue
+		new mag = clipsize[wpn]
+		if(mag < 1)
+			mag = 15
+		new reserve = ts_get_reserve_ammo(id, wpn)
+		if(reserve < 0)
+			reserve = ammo
+		if(clip <= 0 && reserve <= 0)
+		{
+			ts_giveweapon(id, wpn, mag * 2, extra)
+			continue
+		}
+		if(reserve < mag)
+			ts_setuserammo(id, wpn, mag * 3)
+	}
 }
 
 // ------------------------- Game mode system -------------------------
