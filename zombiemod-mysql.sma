@@ -603,8 +603,9 @@ public plugin_init() {
 public plugin_cfg()
 {
 	apply_team_cvars()
+	apply_rcbot_mode_config()
 	// Re-assert after all queued cfg execs have flushed, in case one of them
-	// still carries stale mp_team* lines.
+	// still carries stale mp_team* lines (rcbot map_configs can too).
 	set_task(5.0, "task_apply_team_cvars")
 	server_cmd("rcbot config min_bots 8")
 	server_cmd("rcbot config max_bots 10")
@@ -613,6 +614,17 @@ public plugin_cfg()
 public task_apply_team_cvars()
 {
 	apply_team_cvars()
+	apply_rcbot_mode_config()
+}
+
+// bot_config.ini is only read at boot and carries the Zombie Mod settings
+// (ts_kungfu 1 etc.), so every other mode has to override them at runtime.
+stock apply_rcbot_mode_config()
+{
+	new fists = (g_gamemode == MODE_ZM) ? 1 : 0
+	server_cmd("rcbot config ts_kungfu %d", fists)
+	server_cmd("rcbot config ts_dont_pickup_weapons %d", fists)
+	server_cmd("rcbot config ts_dont_steal_weapons %d", fists)
 }
 
 public server_changelevel(map[])
