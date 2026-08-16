@@ -13,6 +13,20 @@
 
 #define FACTORTIME 60
 #define ZM_DROP_TASK 8000
+
+// CTSGun pdata (Linux ts_i386.so). set_pdata_* linuxdiff is 0; these are raw this+ offsets.
+#define TSGUN_LINUXDIFF		0
+#define TSGUN_OFF_CURWPN	50	// 0xC8 current tsweapon_t
+#define TSGUN_OFF_AMMO0		53	// 0xD4 ammo[type], 16 ints — ReloadWeapon/AddAmmo
+#define TSGUN_OFF_HUDAMMO	621	// 0x9B4 reserve cache sent in WeaponInfo
+
+// Ammo type per tsweapon_t from compile_weapons_info / Write_* in ts_i386.so
+new const g_ts_ammo_type[38] =
+{
+	0, 1, 1, 1, 3, 4, 1, 1, 1, 2, 2, 3, 5, 6, 7, 4,
+	1, 12, 8, 7, 3, 2, 9, 2, 0, 0, 3, 4, 10, 0, 7, 11,
+	4, 3, 0, 0, 13, 12
+}
 /*
 new tsweaponammo[38] = {0,17,15,32,7,30,30,30,15,12,12,20,7,30,20,30,32,20,5,40,8,16,15,25,1,25,8,18,17,0,20,5,100,2,1,1,1,20}
 new tsweaponid[38][32] = {"Kung Fu","Glock 18","Beretta 92F","Mini-Uzi","Benelli M3","M4A1","MP5SD","MP5K","Beretta 92F","SOCOM-MK23","SOCOM-MK23","USAS-12","Desert Eagle","AK47","Five-seveN","STEYR-AUG","Mini-Uzi","Skorpion","Barrett M82A1","MP7-PDW","SPAS-12","Golden Colts","Glock-20C","UMP","M61 Grenade","Combat Knife","Mossberg 500","M16A4","Ruger-MK1","Kung Fu","Five-seveN","Raging Bull","M60E3","Sawed-off","Katana","Seal Knife","Contender G2","Skorpion"
@@ -59,112 +73,93 @@ new g_changing_map = 0
 new g_allow_change = 0
 #define ZM_MAPCHANGE_TASK 9001
 
- // Avalanches Ammo Code (Thanks for letting me use it // Set a user's ammo amount
- public ts_setuserammo(id,weapon,ammo) {
+stock ts_find_tsgun(id)
+{
+	new tsgun = find_ent_by_owner(-1, "weapon_tsgun", id)
+	if(tsgun)
+		return tsgun
 
-   // Kung Fu
-   if(weapon == 36) {
-     client_cmd(id,"weapon_0"); // switch to kung fu	
-     return 0; // stop now
-   }
+	new ent = -1
+	while((ent = find_ent_by_class(ent, "weapon_tsgun")))
+	{
+		if(entity_get_edict(ent, EV_ENT_owner) == id)
+			return ent
+	}
 
-   // Invalid Weapong
-   if(weapon < 0 || weapon > 35) {
-     return 0; // stop now
-   }
+	new Float:origin[3]
+	entity_get_vector(id, EV_VEC_origin, origin)
+	ent = -1
+	while((ent = find_ent_in_sphere(ent, origin, 1.0)) != 0)
+	{
+		new classname[32]
+		entity_get_string(ent, EV_SZ_classname, classname, 31)
+		if(equal(classname, "weapon_tsgun"))
+			return ent
+	}
+	return 0
+}
 
-   client_cmd(id,"weapon_%d",weapon); // switch to whatever weapon
+stock ts_weapon_ammo_type(weapon)
+{
+	if(weapon < 0 || weapon >= 38)
+		return -1
+	return g_ts_ammo_type[weapon]
+}
 
-   // C4 or Katana
-   if(weapon == 29 || weapon == 34) {
-     return 0; // stop now
-   }
+stock ts_get_reserve_ammo(id, weapon)
+{
+	new tsgun = ts_find_tsgun(id)
+	if(!tsgun)
+		return 0
+	new ammotype = ts_weapon_ammo_type(weapon)
+	if(ammotype < 0 || ammotype > 15)
+		return 0
+	return get_pdata_int(tsgun, TSGUN_OFF_AMMO0 + ammotype, TSGUN_LINUXDIFF)
+}
 
-   // TS AMMO OFFSETS
-   new tsweaponoffset[36];
-   tsweaponoffset[1] = 50;
-   tsweaponoffset[3] = 50;
-   tsweaponoffset[4] = 52;
-   tsweaponoffset[5] = 53;
-   tsweaponoffset[6] = 50;
-   tsweaponoffset[7] = 50;
-   tsweaponoffset[8] = 50;
-   tsweaponoffset[9] = 51;
-   tsweaponoffset[10] = 51;
-   tsweaponoffset[11] = 52;
-   tsweaponoffset[12] = 54;
-   tsweaponoffset[13] = 53;
-   tsweaponoffset[14] = 56;
-   tsweaponoffset[15] = 53;
-   tsweaponoffset[16] = 50;
-   tsweaponoffset[17] = 50;
-   tsweaponoffset[18] = 57;
-   tsweaponoffset[19] = 56;
-   tsweaponoffset[20] = 52;
-   tsweaponoffset[21] = 51;
-   tsweaponoffset[22] = 58;
-   tsweaponoffset[23] = 51;
-   tsweaponoffset[24] = 354;
-   tsweaponoffset[25] = 366;
-   tsweaponoffset[26] = 52;
-   tsweaponoffset[27] = 53;
-   tsweaponoffset[28] = 59;
-   tsweaponoffset[30] = 56;
-   tsweaponoffset[31] = 61;
-   tsweaponoffset[32] = 53;
-   tsweaponoffset[33] = 52;
-   tsweaponoffset[35] = 486;
+public ts_setuserammo(id, weapon, ammo)
+{
+	if(weapon == 36)
+	{
+		client_cmd(id, "weapon_0")
+		return 0
+	}
+	if(weapon < 0 || weapon > 35)
+		return 0
+	if(weapon == 29 || weapon == 34)
+		return 0
 
-   new currentent = -1, tsgun = 0; // used for getting user's weapon_tsgun
+	new tsgun = ts_find_tsgun(id)
+	if(!tsgun)
+		return 0
 
-   // get origin
-   new Float:origin[3];
-   entity_get_vector(id,EV_VEC_origin,origin);
+	new currclip, currammo, currmode, currextra
+	ts_getuserwpn(id, currclip, currammo, currmode, currextra)
 
-   // loop through "user's" entities (whatever is stuck to user, basically)
-   while((currentent = find_ent_in_sphere(currentent,origin,Float:1.0)) != 0) {
-     new classname[32];
-     entity_get_string(currentent,EV_SZ_classname,classname,31);
+	if(weapon == 24 || weapon == 25 || weapon == 35)
+	{
+		currclip = ammo
+		ammo = 0
+	}
+	else
+	{
+		new ammotype = ts_weapon_ammo_type(weapon)
+		if(ammotype < 0 || ammotype > 15)
+			return 0
+		set_pdata_int(tsgun, TSGUN_OFF_AMMO0 + ammotype, ammo, TSGUN_LINUXDIFF)
+		if(get_pdata_int(tsgun, TSGUN_OFF_CURWPN, TSGUN_LINUXDIFF) == weapon)
+			set_pdata_int(tsgun, TSGUN_OFF_HUDAMMO, ammo, TSGUN_LINUXDIFF)
+	}
 
-     if(equal(classname,"weapon_tsgun")) { // Found weapon_tsgun
-       tsgun = currentent; // remember it
-     }
-
-   }
-
-   // Couldn't find weapon_tsgun
-   if(tsgun == 0) {
-     return 0; // stop now
-   }
-
-   // Get some of their current settings
-   new currclip, currammo, currmode, currextra;
-   ts_getuserwpn(id,currclip,currammo,currmode,currextra);
-
-   set_pdata_int(tsgun,tsweaponoffset[weapon],ammo); // set their ammo
-
-   // Grenade or knife, set clip
-   if(weapon == 24 || weapon == 25 || weapon == 35) {
-     set_pdata_int(tsgun,41,ammo); // special clip storage
-     set_pdata_int(tsgun,839,ammo); // more special clip storage
-     currclip = ammo; // change what we send to WeaponInfo
-     ammo = 0; // once again, change what we send to WeaponInfo
-   }
-   else { // Not a grenade or knife, set ammo
-     set_pdata_int(tsgun,850,ammo); // special ammo storage
-   }
-
-   // Update user's HUD
-   message_begin(MSG_ONE,get_user_msgid("WeaponInfo"),{0,0,0},id);
-   write_byte(weapon);
-   write_byte(currclip);
-   write_short(ammo);
-   write_byte(currmode);
-   write_byte(currextra);
-   message_end();
-
-   return 1; // wooh!
- }
+	message_begin(MSG_ONE, get_user_msgid("WeaponInfo"), {0,0,0}, id)
+	write_byte(weapon)
+	write_byte(currclip)
+	write_short(ammo)
+	write_byte(currmode)
+	write_byte(currextra)
+	message_end()
+	return 1
+}
  public set_entity_health(door,Float:hp)
 {
 	if(hp == -1.0) {
@@ -4134,10 +4129,13 @@ public reward_frag_ammo(id)
 	if(mag < 1)
 		mag = 15
 	new give = mag * addclips
-	new newammo = ammo + give
+	new reserve = ts_get_reserve_ammo(id, wpn)
+	if(reserve < 0)
+		reserve = ammo
+	new newammo = reserve + give
 	if(newammo > 250)
 		newammo = 250
-	if(newammo <= ammo)
+	if(newammo <= reserve)
 		return
 	if(ts_setuserammo(id, wpn, newammo))
 		client_print(id, print_center, "+%d ammo", give)
