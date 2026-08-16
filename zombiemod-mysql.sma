@@ -4118,16 +4118,16 @@ stock apply_team_cvars_for(mode)
 	if(mode == MODE_DM)
 	{
 		set_cvar_num("mp_teamplay", 0)
-		// FFA: the TS DLL still buckets players by model into mp_teamlist
-		// slots and protects same-bucket "teammates" when friendlyfire is
-		// off, so it must be ON here for everyone to be killable.
+		// Real TS DM (a listenserver, which never execs server.cfg) runs with
+		// EMPTY team lists: no buckets at all, flat scoreboard. Any non-empty
+		// mp_teamlist makes the DLL bucket players by model even with
+		// teamplay 0 — green teammate trackers, teamkill kicks, grouped
+		// scoreboard. RCBot then takes bot models from its botprofiles.
+		set_cvar_string("mp_teamlist", "")
+		set_cvar_string("mp_teammodels", "")
+		// Irrelevant without teams, but ON is the safe value if the DLL
+		// treats bucketless players as one shared team.
 		set_cvar_num("mp_friendlyfire", 1)
-		// The engine ignores these with teamplay off, but RCBot dresses its
-		// bots from mp_teammodels — leave the ZM pair here and the bots keep
-		// spawning as collector-zombie in FFA (and the DM scoreboard groups
-		// players by model name, so it reads as fake teams too).
-		set_cvar_string("mp_teamlist", "team1;team2;team3;team4")
-		set_cvar_string("mp_teammodels", "seal;merc|gordon;laurence|agent|hitman;castor")
 		return
 	}
 	if(mode == MODE_TDM)
