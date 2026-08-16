@@ -4378,6 +4378,10 @@ stock force_player_side(id)
 		new dmteam[8]
 		formatex(dmteam, 7, "p%d", id)
 		set_pev(id, pev_team, id)
+		// RCBot resolves teams from colormap (ZM relies on this with 1/2);
+		// the DLL zeroes it for unknown team strings, which made every
+		// player look like one big team — bots stopped attacking entirely.
+		set_pev(id, pev_colormap, id)
 		set_ts_team_name(id, dmteam)
 		return
 	}
