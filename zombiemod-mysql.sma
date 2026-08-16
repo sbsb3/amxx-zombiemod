@@ -469,6 +469,7 @@ public plugin_init() {
 	RegisterHam(Ham_TraceAttack, "player", "fw_TraceAttack")
 	RegisterHam(Ham_Spawn, "player", "fw_PlayerSpawn", 1)
 	register_message(get_user_msgid("TeamInfo"), "msg_TeamInfo")
+	register_message(get_user_msgid("ScoreInfo"), "msg_ScoreInfo")
 	register_forward(FM_SetClientMaxspeed, "forward_SetClientMaxspeed")
 	register_event("DeathMsg","death_msg","a")
 	register_event("ResetHUD","spawn_msg", "be")
@@ -2344,6 +2345,7 @@ public checksetskills(id) {
 	}
 }
 new parasited[33]
+new g_side_sent[33]
 public client_authorized(id) {
 	if(is_user_bot(id))
 	{
@@ -2419,6 +2421,7 @@ public client_authorized(id) {
 }
 public client_putinserver(id)
 {
+	g_side_sent[id] = 0
 	force_player_side(id)
 	if(is_user_bot(id)) return PLUGIN_HANDLED
 	if(dolights == 1) set_lights( g_lights[g_internal_hour] )
@@ -2430,6 +2433,7 @@ public client_putinserver(id)
 }
 public client_disconnect(id) {
 	//remove_task(id)
+	g_side_sent[id] = 0
 	save(id)
 /*	if(radio > 0) {
 		remove_entity(radio)
@@ -3869,7 +3873,9 @@ public fw_ZombieWeaponTouch(ent, id)
 stock apply_team_cvars()
 {
 	set_cvar_num("mp_teamplay", 1)
-	set_cvar_num("mp_friendlyfire", 1)
+	// Blue vs Red are real teams now (0xB48 team string), so the game's own
+	// FPlayerCanTakeDamage allows cross-team damage and protects teammates.
+	set_cvar_num("mp_friendlyfire", 0)
 	set_cvar_string("mp_teamlist", "Blue;Red")
 	set_cvar_string("mp_teammodels", "seal;collector-zombie")
 }
@@ -3892,15 +3898,17 @@ stock ts_team_name(id, dest[], len)
 	get_pdata_string(id, 0xB48, dest, len, 0, 0)
 }
 
+// Returns 1 if the stored team string had to be changed
 stock set_ts_team_name(id, const team[])
 {
 	if(id < 1 || id > 32 || pev_valid(id) != 2)
-		return
+		return 0
 	new cur[16]
 	ts_team_name(id, cur, 15)
 	if(equali(cur, team))
-		return
+		return 0
 	set_pdata_string(id, 0xB48, team, -1, 0)
+	return 1
 }
 
 stock send_team_info(id, team)
@@ -3914,6 +3922,25 @@ stock send_team_info(id, team)
 	message_end()
 }
 
+stock send_score_info(id, team)
+{
+	new msgid = get_user_msgid("ScoreInfo")
+	if(!msgid || id < 1 || id > 32)
+		return
+	new deaths = 0
+	if(pev_valid(id) == 2)
+		deaths = get_pdata_int(id, 716, 0) // CBasePlayer::m_iDeaths at 0xB30
+	// Scoreboard row/header colors come from this teamnumber, not TeamInfo.
+	// Format matches the game DLL: byte id, frags, deaths, playerclass, team.
+	message_begin(MSG_ALL, msgid)
+	write_byte(id)
+	write_short(get_user_frags(id))
+	write_short(deaths)
+	write_short(0)
+	write_short(team)
+	message_end()
+}
+
 public msg_TeamInfo()
 {
 	new id = get_msg_arg_int(1)
@@ -3923,6 +3950,22 @@ public msg_TeamInfo()
 		set_msg_arg_string(2, "Red")
 	else if(is_user_connected(id))
 		set_msg_arg_string(2, "Blue")
+	return PLUGIN_CONTINUE
+}
+
+// The game resends ScoreInfo (with teamnumber from its own team state) on
+// spawn/team assignment, which would repaint zombies blue. Rewrite in flight.
+public msg_ScoreInfo()
+{
+	if(get_msg_args() < 5)
+		return PLUGIN_CONTINUE
+	new id = get_msg_arg_int(1)
+	if(id < 1 || id > 32)
+		return PLUGIN_CONTINUE
+	if(is_user_bot(id))
+		set_msg_arg_int(5, ARG_SHORT, 2)
+	else if(is_user_connected(id))
+		set_msg_arg_int(5, ARG_SHORT, 1)
 	return PLUGIN_CONTINUE
 }
 
@@ -3965,8 +4008,12 @@ stock force_player_side(id)
 		set_ts_model(id, "collector-zombie")
 		set_pev(id, pev_team, 2)
 		set_pev(id, pev_colormap, 2)
-		set_ts_team_name(id, "Red")
-		send_team_info(id, 2)
+		if(set_ts_team_name(id, "Red") || g_side_sent[id] != 2)
+		{
+			g_side_sent[id] = 2
+			send_team_info(id, 2)
+			send_score_info(id, 2)
+		}
 		return
 	}
 	if(get_cvar_num("sv_parasite") > 0 && parasited[id])
@@ -3978,8 +4025,12 @@ stock force_player_side(id)
 	set_ts_model(id, "seal")
 	set_pev(id, pev_team, 1)
 	set_pev(id, pev_colormap, 1)
-	set_ts_team_name(id, "Blue")
-	send_team_info(id, 1)
+	if(set_ts_team_name(id, "Blue") || g_side_sent[id] != 1)
+	{
+		g_side_sent[id] = 1
+		send_team_info(id, 1)
+		send_score_info(id, 1)
+	}
 }
 
 public force_player_side_task(id)
