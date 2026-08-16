@@ -581,7 +581,7 @@ public plugin_init() {
 	else if(g_gamemode == MODE_TDM)
 		set_task(2.0, "tdm_balance_task", 0, "", 0, "b")
 	if(g_gamemode != MODE_ZM)
-		set_task(10.0, "task_bot_ammo_refill", 0, "", 0, "b")
+		set_task(3.0, "task_bot_ammo_refill", 0, "", 0, "b")
 	new map[64]
 	get_mapname(map,63)
 	server_print("%s",map)
@@ -4213,8 +4213,17 @@ public msg_TeamInfo()
 	{
 		// Even with teamplay off, the TS DLL buckets players into mp_teamlist
 		// slots by model and sends that as their team, so the scoreboard shows
-		// fake teams. Vanilla DM sends an empty team string: no grouping.
-		set_msg_arg_string(2, "")
+		// fake teams — and a shared team string (even "") makes the client
+		// treat those players as teammates: grouped rows, muted hit feedback.
+		// A unique string per player (their own name) means no two players
+		// ever share a team.
+		new dmid = get_msg_arg_int(1)
+		if(dmid >= 1 && dmid <= 32 && is_user_connected(dmid))
+		{
+			new dmname[32]
+			get_user_name(dmid, dmname, 31)
+			set_msg_arg_string(2, dmname)
+		}
 		return PLUGIN_CONTINUE
 	}
 	new id = get_msg_arg_int(1)
