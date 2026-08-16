@@ -54,6 +54,9 @@ public findavailable(id)
 }
 
 new discounter = 0;
+new g_pending_map[32]
+new g_changing_map = 0
+#define ZM_MAPCHANGE_TASK 9001
 
  // Avalanches Ammo Code (Thanks for letting me use it // Set a user's ammo amount
  public ts_setuserammo(id,weapon,ammo) {
@@ -324,7 +327,7 @@ new g_internal_hour;
 new dolights=0;
 new lighton=1;
 public plugin_init() {
-	register_plugin("Zombie Mod","v1.603","StevenlAFl")
+	register_plugin("Zombie Mod","v1.605","StevenlAFl")
 
 	register_concmd("amx_setfrags","setfrags",ADMIN_CVAR,"<name> <frags>")
 	register_concmd("amx_invis","amx_invis",ADMIN_CFG,"<name> <0/1>")
@@ -411,6 +414,7 @@ public plugin_init() {
 	register_srvcmd("set_objectivestatus","amx_objectivestatus")
 	register_srvcmd("amx_addmessage","addmessage")
 	register_srvcmd("amx_removemessage","removemessage")
+	register_srvcmd("zm_map","cmd_changelevel")
 
 	register_cvar("zombiemod_mysql_host","127.0.0.1",FCVAR_PROTECTED)
 	register_cvar("zombiemod_mysql_user","root",FCVAR_PROTECTED)
@@ -563,6 +567,77 @@ public plugin_init() {
 public plugin_cfg()
 {
 	apply_team_cvars()
+	server_cmd("rcbot config min_bots 8")
+	server_cmd("rcbot config max_bots 10")
+}
+
+public server_changelevel(map[])
+{
+	if(g_changing_map)
+		return PLUGIN_CONTINUE
+	request_safe_map(map)
+	return PLUGIN_HANDLED
+}
+
+public cmd_changelevel()
+{
+	new map[32]
+	read_argv(1, map, 31)
+	request_safe_map(map)
+	return PLUGIN_HANDLED
+}
+
+public request_safe_map(const map[])
+{
+	if(g_changing_map)
+		return
+	if(!map[0] || !is_map_valid(map))
+	{
+		server_print("[ZombieDM] Invalid map '%s'", map)
+		return
+	}
+	copy(g_pending_map, 31, map)
+	new kicked = kick_bots_for_mapchange()
+	g_changing_map = 1
+	if(kicked)
+	{
+		server_print("[ZombieDM] Kicked %d bots, changing to %s", kicked, map)
+		client_print(0, print_chat, "[ZombieDM] Changing to %s...", map)
+		remove_task(ZM_MAPCHANGE_TASK)
+		set_task(1.0, "do_safe_changelevel", ZM_MAPCHANGE_TASK)
+		return
+	}
+	do_safe_changelevel()
+}
+
+public do_safe_changelevel()
+{
+	g_changing_map = 1
+	if(!g_pending_map[0] || !is_map_valid(g_pending_map))
+	{
+		g_changing_map = 0
+		return
+	}
+	engine_changelevel(g_pending_map)
+}
+
+stock kick_bots_for_mapchange()
+{
+	server_cmd("rcbot config min_bots 0")
+	server_cmd("rcbot config max_bots 0")
+	new kicked = 0
+	new maxp = get_maxplayers()
+	for(new id = 1; id <= maxp; id++)
+	{
+		if(!is_user_connected(id) && !is_user_connecting(id))
+			continue
+		if(!is_user_bot(id))
+			continue
+		server_cmd("kick #%d", get_user_userid(id))
+		kicked++
+	}
+	server_exec()
+	return kicked
 }
 
 public plugin_end()
@@ -1745,7 +1820,7 @@ public spawn_msg(id)
 	force_player_side(id)
 	new model[32]
 	get_user_info(id,"model",model,31)
-	if(equali(model,"collector-zombie") || get_user_team(id) == 2 || is_user_bot(id))
+	if(is_user_bot(id) || equali(model,"collector-zombie"))
 	{
 		zombie[id] = 1
 		if(!is_user_bot(id))
@@ -1993,7 +2068,7 @@ public hudmsg()
 		if(is_user_admin(players[i]) && ts_get_message(players[i]) != TSMSG_THEONE)
 			ts_set_message(players[i],TSMSG_THEONE)
 		set_hudmessage(get_cvar_num("hud_red"),get_cvar_num("hud_green"),get_cvar_num("hud_blue"),get_cvar_float("hud_pos_x"),get_cvar_float("hud_pos_y"),0,0.0,99.9,0.0,0.0,2)
-		format(fmt,299," Level: %i^n Expirience: %i^n Next Level: %i (%i)^n",g_level[players[i]],exp[players[i]],((g_level[players[i]]*skillfactor)-exp[players[i]]),(g_level[players[i]]*skillfactor));
+		format(fmt,299," Level: %i^n Experience: %i^n Next Level: %i (%i)^n",g_level[players[i]],exp[players[i]],((g_level[players[i]]*skillfactor)-exp[players[i]]),(g_level[players[i]]*skillfactor));
 
 		format(fmt,299,"%s%s",fmt,globalfmt[players[i]])
 		
@@ -3794,7 +3869,7 @@ public fw_ZombieWeaponTouch(ent, id)
 stock apply_team_cvars()
 {
 	set_cvar_num("mp_teamplay", 1)
-	set_cvar_num("mp_friendlyfire", 0)
+	set_cvar_num("mp_friendlyfire", 1)
 	set_cvar_string("mp_teamlist", "Blue;Red")
 	set_cvar_string("mp_teammodels", "seal;collector-zombie")
 }
@@ -3871,9 +3946,13 @@ stock same_side(a, b)
 {
 	if(a < 1 || b < 1 || a > 32 || b > 32)
 		return 0
-	if(is_user_bot(a) && is_user_bot(b))
+	new a_bot = is_user_bot(a)
+	new b_bot = is_user_bot(b)
+	if(a_bot && b_bot)
 		return 1
-	return player_is_zombie(a) == player_is_zombie(b)
+	if(!a_bot && !b_bot)
+		return 1
+	return 0
 }
 
 stock force_player_side(id)
