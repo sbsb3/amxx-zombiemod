@@ -4210,7 +4210,13 @@ stock send_score_info(id, team)
 public msg_TeamInfo()
 {
 	if(g_gamemode == MODE_DM)
+	{
+		// Even with teamplay off, the TS DLL buckets players into mp_teamlist
+		// slots by model and sends that as their team, so the scoreboard shows
+		// fake teams. Vanilla DM sends an empty team string: no grouping.
+		set_msg_arg_string(2, "")
 		return PLUGIN_CONTINUE
+	}
 	new id = get_msg_arg_int(1)
 	if(id < 1 || id > 32)
 		return PLUGIN_CONTINUE
@@ -4232,7 +4238,11 @@ public msg_TeamInfo()
 public msg_ScoreInfo()
 {
 	if(g_gamemode == MODE_DM)
+	{
+		if(get_msg_args() >= 5)
+			set_msg_arg_int(5, ARG_SHORT, 0)
 		return PLUGIN_CONTINUE
+	}
 	if(get_msg_args() < 5)
 		return PLUGIN_CONTINUE
 	new id = get_msg_arg_int(1)
@@ -4490,9 +4500,12 @@ public task_bot_ammo_refill()
 		new reserve = ts_get_reserve_ammo(id, wpn)
 		if(reserve < 0)
 			reserve = ammo
-		if(clip <= 0 && reserve <= 0)
+		if(clip <= 0)
 		{
-			ts_giveweapon(id, wpn, mag * 2, extra)
+			// The dry clip is the problem, not the reserve: RCBot keeps firing
+			// an empty gun instead of reloading. Re-giving the held weapon
+			// re-equips it loaded (same call the /weapon menu uses).
+			ts_giveweapon(id, wpn, 210, extra)
 			continue
 		}
 		if(reserve < mag)
