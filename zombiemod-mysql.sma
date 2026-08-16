@@ -56,6 +56,7 @@ public findavailable(id)
 new discounter = 0;
 new g_pending_map[32]
 new g_changing_map = 0
+new g_allow_change = 0
 #define ZM_MAPCHANGE_TASK 9001
 
  // Avalanches Ammo Code (Thanks for letting me use it // Set a user's ammo amount
@@ -574,7 +575,14 @@ public plugin_cfg()
 
 public server_changelevel(map[])
 {
+	if(g_allow_change)
+		return PLUGIN_CONTINUE
+	// The game re-calls ChangeLevel every frame during intermission; keep
+	// blocking it until our own deferred changelevel is allowed through,
+	// or it changes level while bots are still mid-drop and crashes.
 	if(g_changing_map)
+		return PLUGIN_HANDLED
+	if(!map[0] || !is_map_valid(map))
 		return PLUGIN_CONTINUE
 	request_safe_map(map)
 	return PLUGIN_HANDLED
@@ -598,12 +606,21 @@ public request_safe_map(const map[])
 		return
 	}
 	copy(g_pending_map, 31, map)
-	new kicked = kick_bots_for_mapchange()
 	g_changing_map = 1
+	// Kicking clients from inside the engine's ChangeLevel callback (the
+	// server_changelevel forward) crashes the server, so always do the
+	// kicks from a task on a later, clean server frame.
+	remove_task(ZM_MAPCHANGE_TASK)
+	set_task(0.1, "begin_safe_mapchange", ZM_MAPCHANGE_TASK)
+}
+
+public begin_safe_mapchange()
+{
+	new kicked = kick_bots_for_mapchange()
 	if(kicked)
 	{
-		server_print("[ZombieDM] Kicked %d bots, changing to %s", kicked, map)
-		client_print(0, print_chat, "[ZombieDM] Changing to %s...", map)
+		server_print("[ZombieDM] Kicked %d bots, changing to %s", kicked, g_pending_map)
+		client_print(0, print_chat, "[ZombieDM] Changing to %s...", g_pending_map)
 		remove_task(ZM_MAPCHANGE_TASK)
 		set_task(1.0, "do_safe_changelevel", ZM_MAPCHANGE_TASK)
 		return
@@ -613,12 +630,12 @@ public request_safe_map(const map[])
 
 public do_safe_changelevel()
 {
-	g_changing_map = 1
 	if(!g_pending_map[0] || !is_map_valid(g_pending_map))
 	{
 		g_changing_map = 0
 		return
 	}
+	g_allow_change = 1
 	engine_changelevel(g_pending_map)
 }
 
