@@ -603,8 +603,16 @@ public plugin_init() {
 public plugin_cfg()
 {
 	apply_team_cvars()
+	// Re-assert after all queued cfg execs have flushed, in case one of them
+	// still carries stale mp_team* lines.
+	set_task(5.0, "task_apply_team_cvars")
 	server_cmd("rcbot config min_bots 8")
 	server_cmd("rcbot config max_bots 10")
+}
+
+public task_apply_team_cvars()
+{
+	apply_team_cvars()
 }
 
 public server_changelevel(map[])
@@ -4080,12 +4088,20 @@ public fw_ZombieWeaponTouch(ent, id)
 
 stock apply_team_cvars()
 {
-	if(g_gamemode == MODE_DM)
+	apply_team_cvars_for(g_gamemode)
+}
+
+// The game DLL reads mp_teamplay/mp_teamlist once, at map start, before any
+// plugin runs — so these must already hold the target mode's values when the
+// changelevel happens. No cfg may set them; the plugin is their only owner.
+stock apply_team_cvars_for(mode)
+{
+	if(mode == MODE_DM)
 	{
 		set_cvar_num("mp_teamplay", 0)
 		return
 	}
-	if(g_gamemode == MODE_TDM)
+	if(mode == MODE_TDM)
 	{
 		new blue[32], red[32], models[80]
 		tdm_model(1, blue, 31)
@@ -4447,6 +4463,9 @@ stock gamemode_name(mode, dest[], len)
 stock set_gamemode_and_restart(mode)
 {
 	set_localinfo("gm_mode", mode == MODE_DM ? "dm" : (mode == MODE_TDM ? "tdm" : "zm"))
+	// Must precede the changelevel: the next map's gamerules latch mp_teamplay
+	// at load, before this plugin gets a chance to set anything.
+	apply_team_cvars_for(mode)
 	new name[32], map[32]
 	gamemode_name(mode, name, 31)
 	client_print(0, print_chat, "[GameMode] Switching to %s - restarting map...", name)
