@@ -87,6 +87,20 @@ new g_allow_change = 0
 #define MODE_TDM 2
 #define GM_VOTE_TASK 9200
 #define GM_VOTE_SECONDS 20
+#define GM_WEAPS_VOTE_TASK 9201
+#define GM_WEAPS_MAX 5
+#define DM_WEAPS_TASK 8300
+
+// Matches CTSGun IsRestrictedWeapon bits: 1 knives, 2 pistols, 4 SMGs,
+// 8 rifles, 16 shotguns. 0 = always allowed (kung-fu / grenade / C4).
+new const g_weaps_bit[38] =
+{
+	0, 2, 2, 4, 16, 8, 4, 4, 2, 2, 2, 16, 2, 8, 2, 8,
+	4, 4, 8, 4, 16, 2, 2, 4, 0, 1, 16, 8, 2, 0, 2, 2,
+	8, 16, 1, 1, 0, 1
+}
+new const g_weaps_pistols[] = {1, 9, 12, 14, 22}
+new const g_weaps_shotguns[] = {4, 20, 26, 33}
 
 new g_gamemode = MODE_ZM
 new g_team[33]			// TDM only: 1 = Blue, 2 = Red, 0 = unassigned
@@ -95,6 +109,15 @@ new g_votes[3]
 new g_voted[33]
 new Float:g_last_vote = 0.0
 new g_pending_mode = -1
+// TS weaponrestriction presets (same as the listen-server Create Game list).
+// Bits allow Knives/Pistols/SMGs/Rifles/Shotguns; Kung-Fu is never blocked.
+// 0 all, 1 kung-fu, 2 melee, 3 handguns+melee, 4 handguns+melee+shotguns,
+// 5 all and ignore map-forced limits. Only applied in DM/TDM.
+new g_weaps = 0
+new g_weaps_vote_active = 0
+new g_weaps_votes[5]
+new Float:g_weaps_gave[33]
+new g_weaps_want[33]
 new g_msgid_WeaponInfo
 new g_msgid_ClipInfo
 
@@ -492,6 +515,7 @@ public plugin_init() {
 	register_srvcmd("amx_removemessage","removemessage")
 	register_srvcmd("zm_map","cmd_changelevel")
 	register_srvcmd("gm_mode","cmd_set_gamemode")
+	register_concmd("gm_weaps","cmd_set_weaps",ADMIN_CFG,"<0-5|all|kungfu|melee|pistols|shotguns|nomap> — DM/TDM weapon restriction")
 
 	register_cvar("zombiemod_mysql_host","127.0.0.1",FCVAR_PROTECTED)
 	register_cvar("zombiemod_mysql_user","root",FCVAR_PROTECTED)
@@ -544,6 +568,8 @@ public plugin_init() {
 	register_cvar("gm_vote_cooldown","120")
 	register_cvar("gm_tdm_model_blue","seal")
 	register_cvar("gm_tdm_model_red","merc")
+	register_cvar("gm_weaponrestriction","0")
+	load_weaps()
 
 	register_statsfwd(XMF_DAMAGE)
 	RegisterHam(Ham_TakeDamage, "player", "fw_TakeDamage")
@@ -555,6 +581,7 @@ public plugin_init() {
 	if(gamemode_msg)
 		register_message(gamemode_msg, "msg_GameMode")
 	register_forward(FM_SetClientMaxspeed, "forward_SetClientMaxspeed")
+	register_forward(FM_CmdStart, "fw_CmdStart")
 	register_event("DeathMsg","death_msg","a")
 	register_event("ResetHUD","spawn_msg", "be")
 	register_event("WeaponInfo",	"event_WeaponInfo",	"b")
@@ -562,6 +589,7 @@ public plugin_init() {
 	g_msgid_ClipInfo = get_user_msgid("ClipInfo")
 
 	register_menucmd(register_menuid("Game Mode Vote"),((1<<0)|(1<<1)|(1<<2)|(1<<9)),"action_gamemode_vote")
+	register_menucmd(register_menuid("Weapon Restriction Vote"),((1<<0)|(1<<1)|(1<<2)|(1<<3)|(1<<4)|(1<<9)),"action_weaps_vote")
 	register_menucmd(register_menuid("Category"),1023,"actionMenuweapons")
 	register_menucmd(register_menuid("Pistols"),1023,"actionMenuPistol")
 	register_menucmd(register_menuid("Sub-Machine Guns"),1023,"actionMenuSub")
@@ -644,6 +672,7 @@ public plugin_init() {
 	else if(g_gamemode == MODE_DM)
 		set_task(2.0, "dm_enforce_task", 0, "", 0, "b")
 	set_task(1.0, "task_bot_ammo_refill", 0, "", 0, "b")
+	set_task(2.0, "task_dm_weaps_all_bots", 0, "", 0, "b")
 	new map[64]
 	get_mapname(map,63)
 	server_print("%s",map)
@@ -666,6 +695,7 @@ public plugin_init() {
 
 public plugin_cfg()
 {
+	load_weaps()
 	apply_team_cvars()
 	apply_rcbot_mode_config()
 	// Re-assert after all queued cfg execs have flushed, in case one of them
@@ -677,6 +707,7 @@ public plugin_cfg()
 
 public task_apply_team_cvars()
 {
+	load_weaps()
 	apply_team_cvars()
 	apply_rcbot_mode_config()
 }
@@ -686,9 +717,16 @@ public task_apply_team_cvars()
 stock apply_rcbot_mode_config()
 {
 	new fists = (g_gamemode == MODE_ZM) ? 1 : 0
+	if(g_gamemode != MODE_ZM && g_weaps == 1)
+		fists = 1
+	// RCBot GiveTSWeapon / map pickups ignore weaponrestriction. Stop both
+	// when a DM/TDM limit is on; the plugin hands bots a legal gun instead.
+	new nopick = fists
+	if(g_gamemode != MODE_ZM && g_weaps > 0 && g_weaps < 5)
+		nopick = 1
 	server_cmd("rcbot config ts_kungfu %d", fists)
-	server_cmd("rcbot config ts_dont_pickup_weapons %d", fists)
-	server_cmd("rcbot config ts_dont_steal_weapons %d", fists)
+	server_cmd("rcbot config ts_dont_pickup_weapons %d", nopick)
+	server_cmd("rcbot config ts_dont_steal_weapons %d", nopick)
 	server_exec()
 }
 
@@ -854,6 +892,23 @@ public info_hud_show(id,lol) {
 	}
 	return PLUGIN_HANDLED
 }
+public fw_CmdStart(id, ucmd, seed)
+{
+	if(id < 1 || id > 32)
+		return FMRES_IGNORED
+	new want = g_weaps_want[id]
+	if(!want)
+		return FMRES_IGNORED
+	if(!is_user_alive(id))
+	{
+		g_weaps_want[id] = 0
+		return FMRES_IGNORED
+	}
+	// Same switch path RCBot uses (usercmd weaponselect).
+	set_uc(ucmd, UC_WeaponSelect, want)
+	return FMRES_HANDLED
+}
+
 public forward_SetClientMaxspeed(id, Float:speed)
 {
 	//static Float:f_zs, str_zs[8]
@@ -883,7 +938,17 @@ public event_WeaponInfo(id)
 	new curweapon = read_data(1)
 	g_wpn[id] = curweapon
 
-	if(g_gamemode != MODE_ZM || !player_is_zombie(id) || id == nemesis || !is_user_alive(id))
+	if(g_gamemode != MODE_ZM)
+	{
+		if(g_weaps > 0 && g_weaps < 5 && !weaps_weapon_allowed(curweapon))
+		{
+			if(!task_exists(id + DM_WEAPS_TASK))
+				set_task(0.05, "task_dm_weaps", id + DM_WEAPS_TASK)
+		}
+		return
+	}
+
+	if(!player_is_zombie(id) || id == nemesis || !is_user_alive(id))
 		return
 
 	if(zombie_weapon_allowed(curweapon))
@@ -1559,6 +1624,15 @@ public client_PreThink(id)
 
 	new clip, amm, mode, extra
 	new weaponid = ts_getuserwpn(id, clip, amm, mode, extra)
+	if(g_weaps_want[id] && weaponid == g_weaps_want[id])
+		g_weaps_want[id] = 0
+	if(g_gamemode != MODE_ZM && g_weaps > 0 && g_weaps < 5)
+	{
+		if(!weaps_weapon_allowed(weaponid) || !weaps_weapon_allowed(g_wpn[id]))
+			enforce_dm_weaps(id)
+		else if(is_user_bot(id) && weaps_allowed_mask() && is_unarmed_weapon(weaponid))
+			enforce_dm_weaps(id)
+	}
 	if(g_gamemode == MODE_ZM && (player_is_zombie(id) || is_user_bot(id)))
 		{
 		block_same_side_attack(id)
@@ -1971,6 +2045,9 @@ public spawn_msg(id)
 	if(g_gamemode != MODE_ZM)
 	{
 		zombie[id] = 0
+		if(is_user_bot(id))
+			ts_setusercash(id, 16000)
+		schedule_dm_weaps(id)
 		return PLUGIN_HANDLED
 	}
 	new model[32]
@@ -2896,11 +2973,16 @@ public handle_say( id )
 			start_gamemode_vote(id)
 			return PLUGIN_HANDLED
 		}
+		if(equali(Speech,"/voteweaps") || equali(Speech,"/voteweapons") || equali(Speech,"/voterest"))
+		{
+			start_weaps_vote(id)
+			return PLUGIN_HANDLED
+		}
 		// Outside Zombie Mod everyone plays with the stock buy/kit weapons, so
 		// the spawn-a-gun and perk commands stay off.
 		if(g_gamemode != MODE_ZM && !equal(Speech,"/motd") && !equal(Speech,"/help") && !equal(Speech,"/showoff"))
 		{
-			client_print(id, print_chat, "[GameMode] That command is only available in Zombie Mod. Say /votemode to start a game mode vote.")
+			client_print(id, print_chat, "[GameMode] That command is only available in Zombie Mod. Say /votemode or /voteweaps.")
 			return PLUGIN_HANDLED
 		}
 		if(equal(Speech,"/motd"))
@@ -4194,6 +4276,7 @@ stock apply_team_cvars_for(mode)
 		// Irrelevant without teams, but ON is the safe value if the DLL
 		// treats bucketless players as one shared team.
 		set_cvar_num("mp_friendlyfire", 1)
+		apply_weaponrestriction_for(mode)
 		return
 	}
 	if(mode == MODE_TDM)
@@ -4206,6 +4289,7 @@ stock apply_team_cvars_for(mode)
 		set_cvar_num("mp_friendlyfire", 0)
 		set_cvar_string("mp_teamlist", "Blue;Red")
 		set_cvar_string("mp_teammodels", models)
+		apply_weaponrestriction_for(mode)
 		return
 	}
 	set_cvar_num("mp_teamplay", 1)
@@ -4214,6 +4298,7 @@ stock apply_team_cvars_for(mode)
 	set_cvar_num("mp_friendlyfire", 0)
 	set_cvar_string("mp_teamlist", "Blue;Red")
 	set_cvar_string("mp_teammodels", "seal;collector-zombie")
+	apply_weaponrestriction_for(mode)
 }
 
 // Stock TS player models present on this server (not collector-zombie).
@@ -4525,6 +4610,8 @@ public fw_PlayerSpawn(id)
 		return HAM_IGNORED
 	force_player_side(id)
 	set_task(0.2, "force_player_side_task", id)
+	if(g_gamemode != MODE_ZM)
+		schedule_dm_weaps(id)
 	if(g_gamemode == MODE_ZM && player_is_zombie(id) && id != nemesis)
 	{
 		remove_task(id + ZM_LOADOUT_TASK)
@@ -4680,6 +4767,339 @@ stock load_gamemode()
 	else g_gamemode = MODE_ZM
 }
 
+stock load_weaps()
+{
+	new s[8]
+	get_localinfo("gm_weaps", s, 7)
+	if(s[0] >= '0' && s[0] <= '5' && !s[1])
+		g_weaps = s[0] - '0'
+	else
+		g_weaps = get_cvar_num("gm_weaponrestriction")
+	if(g_weaps < 0 || g_weaps > GM_WEAPS_MAX)
+		g_weaps = 0
+}
+
+stock weaps_name(wr, dest[], len)
+{
+	switch(wr)
+	{
+		case 1: copy(dest, len, "Kung-Fu only")
+		case 2: copy(dest, len, "Melee only")
+		case 3: copy(dest, len, "Handguns and melee")
+		case 4: copy(dest, len, "Handguns, melee, and shotguns")
+		case 5: copy(dest, len, "All weapons (ignore map)")
+		default: copy(dest, len, "All weapons")
+	}
+}
+
+stock parse_weaps_arg(const arg[])
+{
+	if(!arg[0])
+		return -1
+	if(arg[0] >= '0' && arg[0] <= '5' && !arg[1])
+		return arg[0] - '0'
+	if(equali(arg, "all") || equali(arg, "off") || equali(arg, "none"))
+		return 0
+	if(equali(arg, "kungfu") || equali(arg, "kung-fu") || equali(arg, "fists"))
+		return 1
+	if(equali(arg, "melee") || equali(arg, "knives") || equali(arg, "knife"))
+		return 2
+	if(equali(arg, "pistols") || equali(arg, "pistol") || equali(arg, "handguns") || equali(arg, "handgun"))
+		return 3
+	if(equali(arg, "shotguns") || equali(arg, "shotgun"))
+		return 4
+	if(equali(arg, "nomap") || equali(arg, "override"))
+		return 5
+	return -1
+}
+
+stock set_weaps(wr)
+{
+	if(wr < 0 || wr > GM_WEAPS_MAX)
+		wr = 0
+	g_weaps = wr
+	new s[8]
+	num_to_str(wr, s, 7)
+	set_localinfo("gm_weaps", s)
+	set_cvar_num("gm_weaponrestriction", wr)
+	apply_weaponrestriction_for(g_gamemode)
+	apply_rcbot_mode_config()
+	server_exec()
+	if(g_gamemode != MODE_ZM)
+	{
+		new num, players[32]
+		get_players(players, num, "a")
+		for(new i = 0; i < num; i++)
+			enforce_dm_weaps(players[i])
+	}
+}
+
+// The game DLL latches the weaponrestriction cvar at map start (buy/pickup
+// bitmask). The console command of the same name writes the live bitmask, so
+// a mid-map /voteweaps takes effect on the next buy/spawn.
+stock apply_weaponrestriction_for(mode)
+{
+	new wr = (mode == MODE_ZM) ? 0 : g_weaps
+	set_cvar_num("weaponrestriction", wr)
+	server_cmd("weaponrestriction %d", wr)
+}
+
+stock weaps_allowed_mask()
+{
+	switch(g_weaps)
+	{
+		case 1: return 0
+		case 2: return 1
+		case 3: return 3
+		case 4: return 19
+		default: return 31
+	}
+	return 31
+}
+
+stock weaps_weapon_allowed(wpn)
+{
+	if(wpn < 0 || wpn >= 38)
+		return 1
+	new bit = g_weaps_bit[wpn]
+	if(!bit)
+		return 1
+	return (bit & weaps_allowed_mask()) ? 1 : 0
+}
+
+stock weaps_slot_occupied(id, wpn)
+{
+	new tsgun = ts_find_tsgun(id)
+	if(!tsgun || wpn < 1 || wpn > TSGUN_WPN_SLOTS)
+		return 0
+	new base = TSGUN_OFF_WPNBASE + wpn * TSGUN_WPN_INTS
+	if(!get_pdata_int(tsgun, base, TSGUN_LINUXDIFF))
+		return 0
+	// Knives have no magazine; guns with a stale occupancy flag and no
+	// clip are leftovers from a stripped rifle, not a real pistol.
+	if(g_weaps_bit[wpn] == 1)
+		return 1
+	return (get_pdata_int(tsgun, base + TSGUN_OFF_SLOTCLIP, TSGUN_LINUXDIFF) > 0)
+}
+
+stock weaps_first_allowed(id)
+{
+	for(new w = 1; w <= TSGUN_WPN_SLOTS; w++)
+	{
+		if(!g_weaps_bit[w] || !weaps_weapon_allowed(w))
+			continue
+		if(weaps_slot_occupied(id, w))
+			return w
+	}
+	return 0
+}
+
+stock weaps_has_allowed_gun(id)
+{
+	return weaps_first_allowed(id) ? 1 : 0
+}
+
+stock weaps_select(id, wpn)
+{
+	if(wpn < 1 || !is_user_alive(id))
+		return
+	new tsgun = ts_find_tsgun(id)
+	if(!tsgun)
+		return
+	// TS binds "weapon_%i" / "weapon_0" (kung-fu). Writing curwpn alone
+	// leaves the kung-fu deploy active, so bots keep punching. RCBot
+	// switches via usercmd weaponselect; fw_CmdStart repeats that.
+	set_pdata_int(tsgun, TSGUN_OFF_CURWPN, wpn, TSGUN_LINUXDIFF)
+	new cmd[16]
+	formatex(cmd, 15, "weapon_%d", wpn)
+	engclient_cmd(id, cmd)
+	g_weaps_want[id] = wpn
+	ExecuteHam(Ham_Item_Deploy, tsgun)
+	g_wpn[id] = wpn
+	new clip = ts_get_live_clip(tsgun, wpn)
+	if(clip < 0)
+		clip = 0
+	new reserve = ts_get_reserve_ammo(id, wpn)
+	if(g_weaps_bit[wpn] != 1 && reserve < 1)
+	{
+		new mag = ts_weapon_clipsize(wpn)
+		reserve = mag * 4
+		if(reserve < 32)
+			reserve = 32
+		if(reserve > 250)
+			reserve = 250
+		new ammotype = ts_weapon_ammo_type(wpn)
+		if(ammotype >= 0 && ammotype <= 15)
+		{
+			set_pdata_int(tsgun, TSGUN_OFF_AMMO0 + ammotype, reserve, TSGUN_LINUXDIFF)
+			set_pdata_int(tsgun, TSGUN_OFF_HUDAMMO, reserve, TSGUN_LINUXDIFF)
+		}
+	}
+	ts_send_weapon_hud(id, wpn, clip, reserve, 0, 0)
+}
+
+stock weaps_give_bot_loadout(id)
+{
+	new mask = weaps_allowed_mask()
+	if(!mask)
+	{
+		force_kungfu_hands(id)
+		return
+	}
+	new existing = weaps_first_allowed(id)
+	if(existing)
+	{
+		weaps_select(id, existing)
+		return
+	}
+	if(get_gametime() - g_weaps_gave[id] < 0.20)
+		return
+	g_weaps_gave[id] = get_gametime()
+
+	new wpn
+	if(mask & 2)
+		wpn = g_weaps_pistols[random(sizeof g_weaps_pistols)]
+	else if(mask & 16)
+		wpn = g_weaps_shotguns[random(sizeof g_weaps_shotguns)]
+	else
+		wpn = TSW_CKNIFE
+
+	ts_setusercash(id, 16000)
+
+	// Ground-weapon touch is how RCBot and ts_giveweapon both grant guns.
+	new wid[8]
+	num_to_str(wpn, wid, 7)
+	new Float:origin[3]
+	entity_get_vector(id, EV_VEC_origin, origin)
+	new ent = create_entity("ts_groundweapon")
+	if(ent)
+	{
+		DispatchKeyValue(ent, "tsweaponid", wid)
+		DispatchKeyValue(ent, "wduration", "1")
+		DispatchKeyValue(ent, "wextraclip", "8")
+		DispatchKeyValue(ent, "spawnflags", "1073741824")
+		DispatchSpawn(ent)
+		entity_set_origin(ent, origin)
+		fake_touch(ent, id)
+		if(pev_valid(ent))
+			remove_entity(ent)
+	}
+
+	if(!weaps_has_allowed_gun(id))
+	{
+		new oldwr = get_cvar_num("weaponrestriction")
+		if(oldwr)
+		{
+			set_cvar_num("weaponrestriction", 0)
+			server_cmd("weaponrestriction 0")
+			server_exec()
+		}
+		ts_giveweapon(id, wpn, 8, 0)
+		if(oldwr)
+		{
+			set_cvar_num("weaponrestriction", oldwr)
+			server_cmd("weaponrestriction %d", oldwr)
+			server_exec()
+		}
+	}
+
+	existing = weaps_first_allowed(id)
+	if(existing)
+		weaps_select(id, existing)
+	else
+		g_wpn[id] = 0
+}
+
+stock schedule_dm_weaps(id)
+{
+	if(id < 1 || id > 32)
+		return
+	if(g_gamemode == MODE_ZM || g_weaps <= 0 || g_weaps >= 5)
+		return
+	g_weaps_gave[id] = 0.0
+	g_weaps_want[id] = 0
+	remove_task(id + DM_WEAPS_TASK)
+	remove_task(id + DM_WEAPS_TASK + 100)
+	remove_task(id + DM_WEAPS_TASK + 200)
+	remove_task(id + DM_WEAPS_TASK + 300)
+	set_task(0.15, "task_dm_weaps", id + DM_WEAPS_TASK)
+	set_task(0.60, "task_dm_weaps", id + DM_WEAPS_TASK + 100)
+	set_task(1.50, "task_dm_weaps", id + DM_WEAPS_TASK + 200)
+	set_task(3.00, "task_dm_weaps", id + DM_WEAPS_TASK + 300)
+}
+
+public task_dm_weaps(tid)
+{
+	new id = tid - DM_WEAPS_TASK
+	while(id > 32)
+		id -= 100
+	if(id < 1 || id > 32)
+		return
+	enforce_dm_weaps(id)
+}
+
+public task_dm_weaps_all_bots()
+{
+	if(g_gamemode == MODE_ZM || g_weaps <= 0 || g_weaps >= 5)
+		return
+	if(!weaps_allowed_mask())
+		return
+	new num, players[32]
+	get_players(players, num, "ad")
+	for(new i = 0; i < num; i++)
+	{
+		new clip, ammo, mode, extra
+		new wpn = ts_getuserwpn(players[i], clip, ammo, mode, extra)
+		if(is_unarmed_weapon(wpn))
+			enforce_dm_weaps(players[i])
+	}
+}
+
+stock enforce_dm_weaps(id)
+{
+	if(g_gamemode == MODE_ZM || g_weaps <= 0 || g_weaps >= 5)
+		return
+	if(id < 1 || id > 32 || !is_user_alive(id))
+		return
+	new tsgun = ts_find_tsgun(id)
+	if(!tsgun)
+		return
+	for(new w = 1; w <= TSGUN_WPN_SLOTS; w++)
+	{
+		if(weaps_weapon_allowed(w))
+			continue
+		new base = TSGUN_OFF_WPNBASE + w * TSGUN_WPN_INTS
+		if(!get_pdata_int(tsgun, base, TSGUN_LINUXDIFF))
+			continue
+		for(new i = 0; i < TSGUN_WPN_INTS; i++)
+			set_pdata_int(tsgun, base + i, 0, TSGUN_LINUXDIFF)
+	}
+	new clip, ammo, mode, extra
+	new cur = ts_getuserwpn(id, clip, ammo, mode, extra)
+	new pdata_cur = get_pdata_int(tsgun, TSGUN_OFF_CURWPN, TSGUN_LINUXDIFF)
+	if(pdata_cur && !weaps_weapon_allowed(pdata_cur))
+	{
+		set_pdata_int(tsgun, TSGUN_OFF_CURWPN, 0, TSGUN_LINUXDIFF)
+		pdata_cur = 0
+	}
+	if(cur && !weaps_weapon_allowed(cur))
+		cur = 0
+	if(is_user_bot(id) && weaps_allowed_mask())
+	{
+		new keep = weaps_first_allowed(id)
+		if(keep)
+		{
+			if(!weaps_weapon_allowed(cur) || is_unarmed_weapon(cur))
+				weaps_select(id, keep)
+			return
+		}
+		weaps_give_bot_loadout(id)
+		return
+	}
+	if(cur && !weaps_weapon_allowed(cur))
+		force_kungfu_hands(id)
+}
+
 stock gamemode_name(mode, dest[], len)
 {
 	switch(mode)
@@ -4728,6 +5148,43 @@ public cmd_set_gamemode()
 	return PLUGIN_HANDLED
 }
 
+public cmd_set_weaps(id, level, cid)
+{
+	if(!cmd_access(id, level, cid, 1))
+		return PLUGIN_HANDLED
+	new arg[32]
+	read_argv(1, arg, 31)
+	if(!arg[0])
+	{
+		new name[40]
+		weaps_name(g_weaps, name, 39)
+		console_print(id, "[GameMode] Usage: gm_weaps <0-5|all|kungfu|melee|pistols|shotguns|nomap>")
+		console_print(id, "[GameMode] 0 all, 1 kung-fu, 2 melee, 3 handguns+melee, 4 handguns+melee+shotguns, 5 ignore map")
+		console_print(id, "[GameMode] Current: %d (%s)%s", g_weaps, name, (g_gamemode == MODE_ZM) ? " - applies in DM/TDM only" : "")
+		return PLUGIN_HANDLED
+	}
+	new wr = parse_weaps_arg(arg)
+	if(wr < 0)
+	{
+		console_print(id, "[GameMode] Unknown restriction '%s'. Use 0-5 or all/kungfu/melee/pistols/shotguns/nomap.", arg)
+		return PLUGIN_HANDLED
+	}
+	new name[40]
+	weaps_name(wr, name, 39)
+	if(wr == g_weaps && (g_gamemode == MODE_ZM || get_cvar_num("weaponrestriction") == wr))
+	{
+		console_print(id, "[GameMode] Already %s.", name)
+		return PLUGIN_HANDLED
+	}
+	set_weaps(wr)
+	console_print(id, "[GameMode] Weapon restriction: %s", name)
+	if(g_gamemode == MODE_ZM)
+		client_print(0, print_chat, "[GameMode] Next Deathmatch / Team Deathmatch will use: %s.", name)
+	else
+		client_print(0, print_chat, "[GameMode] Weapon restriction: %s. Takes effect on the next buy or spawn.", name)
+	return PLUGIN_HANDLED
+}
+
 // ------------------------- Game mode vote -------------------------
 
 public start_gamemode_vote(id)
@@ -4736,7 +5193,7 @@ public start_gamemode_vote(id)
 		return PLUGIN_HANDLED
 	if(g_changing_map || g_pending_mode != -1)
 		return PLUGIN_HANDLED
-	if(g_vote_active)
+	if(g_vote_active || g_weaps_vote_active)
 	{
 		client_print(id, print_chat, "[GameMode] A vote is already in progress.")
 		return PLUGIN_HANDLED
@@ -4819,6 +5276,97 @@ public apply_gamemode_vote()
 	new mode = g_pending_mode
 	g_pending_mode = -1
 	set_gamemode_and_restart(mode)
+}
+
+// ------------------------- Weapon restriction vote (DM/TDM) -------------------------
+
+public start_weaps_vote(id)
+{
+	if(id < 1 || id > 32 || is_user_bot(id))
+		return PLUGIN_HANDLED
+	if(g_gamemode == MODE_ZM)
+	{
+		client_print(id, print_chat, "[GameMode] Weapon restriction votes are for Deathmatch and Team Deathmatch. Say /votemode first.")
+		return PLUGIN_HANDLED
+	}
+	if(g_changing_map || g_pending_mode != -1)
+		return PLUGIN_HANDLED
+	if(g_vote_active || g_weaps_vote_active)
+	{
+		client_print(id, print_chat, "[GameMode] A vote is already in progress.")
+		return PLUGIN_HANDLED
+	}
+	new Float:cooldown = get_cvar_float("gm_vote_cooldown")
+	if(g_last_vote > 0.0 && get_gametime() - g_last_vote < cooldown)
+	{
+		client_print(id, print_chat, "[GameMode] Please wait %d more seconds before starting another vote.", floatround(cooldown - (get_gametime() - g_last_vote)))
+		return PLUGIN_HANDLED
+	}
+	g_weaps_vote_active = 1
+	g_last_vote = get_gametime()
+	for(new i = 0; i < 5; i++)
+		g_weaps_votes[i] = 0
+
+	new name[32], curname[40], menu[256]
+	get_user_name(id, name, 31)
+	weaps_name(g_weaps, curname, 39)
+	client_print(0, print_chat, "[GameMode] %s started a weapon restriction vote! %d seconds to vote.", name, GM_VOTE_SECONDS)
+	formatex(menu, 255, "Weapon Restriction Vote^n(current: %s)^n^n1. All weapons^n2. Kung-Fu only^n3. Melee only^n4. Handguns and melee^n5. Handguns, melee, and shotguns^n^n0. No vote", curname)
+
+	new keys = ((1<<0)|(1<<1)|(1<<2)|(1<<3)|(1<<4)|(1<<9))
+	new num, players[32]
+	get_players(players, num, "c")
+	for(new i = 0; i < num; i++)
+	{
+		g_voted[players[i]] = 0
+		show_menu(players[i], keys, menu, GM_VOTE_SECONDS)
+	}
+	remove_task(GM_WEAPS_VOTE_TASK)
+	set_task(float(GM_VOTE_SECONDS), "finish_weaps_vote", GM_WEAPS_VOTE_TASK)
+	return PLUGIN_HANDLED
+}
+
+public action_weaps_vote(id, key)
+{
+	if(!g_weaps_vote_active || key > 4 || is_user_bot(id) || g_voted[id])
+		return PLUGIN_HANDLED
+	g_voted[id] = 1
+	g_weaps_votes[key]++
+	new name[32], wrname[40]
+	get_user_name(id, name, 31)
+	weaps_name(key, wrname, 39)
+	client_print(0, print_chat, "[GameMode] %s voted for %s.", name, wrname)
+	return PLUGIN_HANDLED
+}
+
+public finish_weaps_vote()
+{
+	if(!g_weaps_vote_active)
+		return
+	g_weaps_vote_active = 0
+	new total = 0
+	new winner = 0
+	for(new i = 0; i < 5; i++)
+	{
+		total += g_weaps_votes[i]
+		if(g_weaps_votes[i] > g_weaps_votes[winner])
+			winner = i
+	}
+	client_print(0, print_chat, "[GameMode] Results - All: %d, Kung-Fu: %d, Melee: %d, Handguns+melee: %d, +shotguns: %d.", g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4])
+	if(!total)
+	{
+		client_print(0, print_chat, "[GameMode] No votes were cast. Keeping the current restriction.")
+		return
+	}
+	new name[40]
+	weaps_name(winner, name, 39)
+	if(winner == g_weaps)
+	{
+		client_print(0, print_chat, "[GameMode] %s wins - already using it, no change.", name)
+		return
+	}
+	set_weaps(winner)
+	client_print(0, print_chat, "[GameMode] %s wins. Takes effect on the next buy or spawn.", name)
 }
 
 // ------------------------- Team Deathmatch -------------------------

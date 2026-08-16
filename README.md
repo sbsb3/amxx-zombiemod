@@ -17,11 +17,19 @@ The plugin runs one of three modes per map: **Zombie Mod** (default), **Deathmat
 
 In Deathmatch and Team Deathmatch all zombie behavior is disabled — no zombie team, no exp/level HUD or database writes, no entity removal, no weapon-spawn chat commands — so everyone plays with stock models and the normal TS buy/kit weapons, with RCBots filling the server. In Team Deathmatch everyone is force-assigned to Blue/Red keeping the sides even (leaver imbalance is corrected by moving a dead bot), using stock models set by `gm_tdm_model_blue`/`gm_tdm_model_red`.
 
+Weapon limits in DM/TDM are the same listen-server presets as the TS `weaponrestriction` cvar (Kung-Fu is never blocked). They do **not** apply in Zombie Mod.
+
 ```bash
-gm_vote_cooldown "120"     # seconds between game mode votes
+gm_vote_cooldown "120"     # seconds between game mode / restriction votes
 gm_tdm_model_blue "seal"   # TDM Blue team model (stock)
 gm_tdm_model_red "merc"    # TDM Red team model (stock)
+gm_weaponrestriction "0"   # DM/TDM default: 0 all, 1 kung-fu, 2 melee,
+                           # 3 handguns+melee, 4 handguns+melee+shotguns,
+                           # 5 all and ignore map limits
 ```
+
+- `/voteweaps` (also `/voteweapons`) opens a vote in DM/TDM. The winner is applied live (next buy/spawn) and remembered across map changes via localinfo `gm_weaps`. RCBot spawn kits ignore the TS cvar, so the plugin strips illegal guns from bots and gives them a legal one.
+- Admins can force it from console: `gm_weaps <0-5|all|kungfu|melee|pistols|shotguns|nomap>`. Setting it during Zombie Mod only stores the choice for the next DM/TDM.
 
 ## Console Variables
 ```bash
@@ -101,6 +109,8 @@ sv_grenade_timer "120"
 ```
 
 ## Chat commands
+- `/votemode` `/votezm` `/votedm` `/votetdm`
+- `/voteweaps` `/voteweapons` (DM/TDM weapon restriction)
 - `/weapon`
 - `/laser`
 - `/flashlight`
@@ -176,6 +186,8 @@ sv_grenade_timer "120"
 - `amx_setmodel`
 
 ## Server commands
+- `gm_mode` `<zm|dm|tdm>`
+- `gm_weaps` `<0-5|all|kungfu|melee|pistols|shotguns|nomap>`
 - `spawn_nemesis`
 - `set_objective`
 - `set_objectivestatus`
