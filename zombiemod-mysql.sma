@@ -632,6 +632,7 @@ stock apply_rcbot_mode_config()
 	server_cmd("rcbot config ts_kungfu %d", fists)
 	server_cmd("rcbot config ts_dont_pickup_weapons %d", fists)
 	server_cmd("rcbot config ts_dont_steal_weapons %d", fists)
+	server_exec()
 }
 
 public server_changelevel(map[])
@@ -4155,6 +4156,22 @@ stock apply_team_cvars_for(mode)
 	set_cvar_string("mp_teammodels", "seal;collector-zombie")
 }
 
+// Stock TS player models present on this server (not collector-zombie).
+new const g_dm_models[][] = {
+	"seal", "merc", "gordon", "laurence", "agent", "hitman", "castor"
+}
+
+stock dm_slot_model(id, dest[], len)
+{
+	new n = sizeof g_dm_models
+	if(n < 1)
+	{
+		copy(dest, len, "seal")
+		return
+	}
+	copy(dest, len, g_dm_models[(id - 1) % n])
+}
+
 stock set_ts_model(id, const model[])
 {
 	new cur[32]
@@ -4360,27 +4377,28 @@ stock force_player_side(id)
 		return
 	if(g_gamemode == MODE_DM)
 	{
-		// ZM wrote collector-zombie into the client's persistent setinfo, so
-		// it follows players into DM (and RCBot clones human models onto
-		// bots, spreading it further). Shed it here; players can still pick
-		// any normal character afterwards.
+		// RCBot 1.51b13 CBot::IsEnemy for TS always strcmp's setinfo "model"
+		// (the m_bTeamPlay==0 FFA jump is NOP'd in the shipped .so). Same
+		// model = teammate, no fire. ZM works because humans are seal and
+		// zombies are collector-zombie. Do NOT collapse everyone to seal.
+		// Unique stock model per slot so even an unpatched RCBot still
+		// treats players as enemies. Human model picks get overwritten —
+		// FFA needs the unique string more than a chosen skin.
 		new model[32]
+		new want[16]
+		dm_slot_model(id, want, 15)
 		get_user_info(id, "model", model, 31)
-		if(equali(model, "collector-zombie"))
-			set_ts_model(id, "seal")
+		if(!equali(model, want))
+			set_ts_model(id, want)
 		// The DLL auto-cycles joiners onto Team1..Team4 even with teamplay 0
 		// and an empty teamlist, so every 4th player is your "teammate":
-		// friendly-fire frag penalties, TK kicks, bots refusing to shoot.
-		// A unique team string per player (string-compared in the DLL's
-		// FPlayerCanTakeDamage, same 0xB48 field ZM uses for Blue/Red) makes
+		// friendly-fire frag penalties and TK kicks. A unique team string
+		// per player (0xB48, string-compared in FPlayerCanTakeDamage) makes
 		// everyone mutual enemies. Client never sees these: msg_TeamInfo /
 		// msg_ScoreInfo blank them for the flat listenserver-style board.
 		new dmteam[8]
 		formatex(dmteam, 7, "p%d", id)
 		set_pev(id, pev_team, id)
-		// RCBot resolves teams from colormap (ZM relies on this with 1/2);
-		// the DLL zeroes it for unknown team strings, which made every
-		// player look like one big team — bots stopped attacking entirely.
 		set_pev(id, pev_colormap, id)
 		set_ts_team_name(id, dmteam)
 		return
@@ -4427,13 +4445,13 @@ public force_player_side_task(id)
 }
 
 // The DLL re-runs its Team1..4 auto-assignment at spawn; keep stamping the
-// unique per-player teams back on top.
+// unique per-player teams/models back on top. Must include bots — "c" skips them.
 public dm_enforce_task()
 {
 	if(g_gamemode != MODE_DM)
 		return
 	new num, players[32]
-	get_players(players, num, "c")
+	get_players(players, num)
 	for(new i = 0; i < num; i++)
 		force_player_side(players[i])
 }
@@ -4546,11 +4564,13 @@ public task_bot_ammo_refill()
 		return
 	static clipsize[37] = {0,17,15,32,7,30,30,30,15,12,12,20,7,30,20,30,32,20,5,40,8,16,15,25,1,0,8,30,17,0,20,5,100,2,0,0,1}
 	new num, players[32]
-	get_players(players, num, "c")
+	// "ad" = alive, skip humans (bots only). "c" is skip-bots, which
+	// made this refill a no-op and left DM bots dry-firing forever.
+	get_players(players, num, "ad")
 	for(new i = 0; i < num; i++)
 	{
 		new id = players[i]
-		if(!is_user_bot(id) || !is_user_alive(id))
+		if(!is_user_alive(id))
 			continue
 		new clip, ammo, firemode, extra
 		new wpn = ts_getuserwpn(id, clip, ammo, firemode, extra)
