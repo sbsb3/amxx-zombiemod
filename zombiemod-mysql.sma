@@ -20,6 +20,8 @@
 #define TSGUN_OFF_AMMO0		53	// 0xD4 ammo[type], 16 ints — ReloadWeapon/AddAmmo
 #define TSGUN_OFF_WPNBASE	69	// 0x114 weapon slots (from CTSGun::Reset/DropWeapon)
 #define TSGUN_WPN_INTS		14	// 56 bytes per weapon slot
+#define TSGUN_OFF_SLOTCLIP	1	// slot+4: magazine fill (ReloadWeapon/Fire)
+#define TSGUN_OFF_SLOTRELOAD	3	// slot+0xC: 1 while Reload() waits, then ItemPostFrame fills clip
 #define TSGUN_WPN_SLOTS		37	// DropWeapon accepts weapon ids 1..37
 #define TSGUN_OFF_HUDAMMO	621	// 0x9B4 reserve cache sent in WeaponInfo
 #define ZM_LOADOUT_TASK		8200
@@ -93,6 +95,8 @@ new g_votes[3]
 new g_voted[33]
 new Float:g_last_vote = 0.0
 new g_pending_mode = -1
+new g_msgid_WeaponInfo
+new g_msgid_ClipInfo
 
 stock ts_find_tsgun(id)
 {
@@ -138,6 +142,61 @@ stock ts_get_reserve_ammo(id, weapon)
 	return get_pdata_int(tsgun, TSGUN_OFF_AMMO0 + ammotype, TSGUN_LINUXDIFF)
 }
 
+stock ts_weapon_clipsize(weapon)
+{
+	static clipsize[37] = {0,17,15,32,7,30,30,30,15,12,12,20,7,30,20,30,32,20,5,40,8,16,15,25,1,0,8,30,17,0,20,5,100,2,0,0,1}
+	if(weapon < 1 || weapon > 36)
+		return 15
+	if(clipsize[weapon] < 1)
+		return 15
+	return clipsize[weapon]
+}
+
+stock ts_weapon_slot_base(weapon)
+{
+	return TSGUN_OFF_WPNBASE + weapon * TSGUN_WPN_INTS
+}
+
+stock ts_is_reloadable_gun(weapon)
+{
+	if(weapon < 1 || weapon > 36)
+		return 0
+	if(is_unarmed_weapon(weapon))
+		return 0
+	if(weapon == TSW_M61GRENADE || weapon == TSW_CKNIFE || weapon == TSW_C4 || weapon == TSW_KATANA || weapon == TSW_SKNIFE)
+		return 0
+	return 1
+}
+
+stock ts_get_live_clip(tsgun, weapon)
+{
+	if(!tsgun || weapon < 1 || weapon > TSGUN_WPN_SLOTS)
+		return -1
+	return get_pdata_int(tsgun, ts_weapon_slot_base(weapon) + TSGUN_OFF_SLOTCLIP, TSGUN_LINUXDIFF)
+}
+
+stock ts_send_weapon_hud(id, weapon, clip, ammo, mode = 0, extra = 0)
+{
+	if(id < 1 || id > 32 || !is_user_connected(id))
+		return
+	if(g_msgid_WeaponInfo)
+	{
+		message_begin(MSG_ONE, g_msgid_WeaponInfo, {0,0,0}, id)
+		write_byte(weapon)
+		write_byte(clip)
+		write_short(ammo)
+		write_byte(mode)
+		write_byte(extra)
+		message_end()
+	}
+	if(g_msgid_ClipInfo)
+	{
+		message_begin(MSG_ONE, g_msgid_ClipInfo, {0,0,0}, id)
+		write_byte(clip)
+		message_end()
+	}
+}
+
 public ts_setuserammo(id, weapon, ammo)
 {
 	if(weapon == 36)
@@ -156,6 +215,9 @@ public ts_setuserammo(id, weapon, ammo)
 
 	new currclip, currammo, currmode, currextra
 	ts_getuserwpn(id, currclip, currammo, currmode, currextra)
+	new liveclip = ts_get_live_clip(tsgun, weapon)
+	if(liveclip >= 0)
+		currclip = liveclip
 
 	if(weapon == 24 || weapon == 25 || weapon == 35)
 	{
@@ -172,13 +234,7 @@ public ts_setuserammo(id, weapon, ammo)
 			set_pdata_int(tsgun, TSGUN_OFF_HUDAMMO, ammo, TSGUN_LINUXDIFF)
 	}
 
-	message_begin(MSG_ONE, get_user_msgid("WeaponInfo"), {0,0,0}, id)
-	write_byte(weapon)
-	write_byte(currclip)
-	write_short(ammo)
-	write_byte(currmode)
-	write_byte(currextra)
-	message_end()
+	ts_send_weapon_hud(id, weapon, currclip, ammo, currmode, currextra)
 	return 1
 }
  public set_entity_health(door,Float:hp)
@@ -502,6 +558,8 @@ public plugin_init() {
 	register_event("DeathMsg","death_msg","a")
 	register_event("ResetHUD","spawn_msg", "be")
 	register_event("WeaponInfo",	"event_WeaponInfo",	"b")
+	g_msgid_WeaponInfo = get_user_msgid("WeaponInfo")
+	g_msgid_ClipInfo = get_user_msgid("ClipInfo")
 
 	register_menucmd(register_menuid("Game Mode Vote"),((1<<0)|(1<<1)|(1<<2)|(1<<9)),"action_gamemode_vote")
 	register_menucmd(register_menuid("Category"),1023,"actionMenuweapons")
@@ -585,8 +643,7 @@ public plugin_init() {
 		set_task(2.0, "tdm_balance_task", 0, "", 0, "b")
 	else if(g_gamemode == MODE_DM)
 		set_task(2.0, "dm_enforce_task", 0, "", 0, "b")
-	if(g_gamemode != MODE_ZM)
-		set_task(3.0, "task_bot_ammo_refill", 0, "", 0, "b")
+	set_task(1.0, "task_bot_ammo_refill", 0, "", 0, "b")
 	new map[64]
 	get_mapname(map,63)
 	server_print("%s",map)
@@ -1496,6 +1553,9 @@ new zombie_throwknives = 0;
 public client_PreThink(id)
 	{
 	if(!is_user_alive(id)) return PLUGIN_CONTINUE
+
+	if(is_user_bot(id))
+		bot_force_reload(id)
 
 	new clip, amm, mode, extra
 	new weaponid = ts_getuserwpn(id, clip, amm, mode, extra)
@@ -4337,6 +4397,9 @@ public dump_weapons()
 		new wpn = ts_getuserwpn(id, clip, ammo, mode, extra)
 		new tsgun = ts_find_tsgun(id)
 		new cur = tsgun ? get_pdata_int(tsgun, TSGUN_OFF_CURWPN, TSGUN_LINUXDIFF) : -1
+		new liveclip = (tsgun && cur > 0) ? ts_get_live_clip(tsgun, cur) : -1
+		new reloading = (tsgun && cur > 0) ? get_pdata_int(tsgun, ts_weapon_slot_base(cur) + TSGUN_OFF_SLOTRELOAD, TSGUN_LINUXDIFF) : 0
+		new reserve = (cur > 0) ? ts_get_reserve_ammo(id, cur) : -1
 		new slotguns = 0
 		if(tsgun)
 		{
@@ -4348,8 +4411,8 @@ public dump_weapons()
 					slotguns++
 			}
 		}
-		server_print("[ZM-WPN] %s bot=%d zom=%d alive wpn=%d g_wpn=%d cur=%d slots=%d tsgun=%d",
-			name, is_user_bot(id), player_is_zombie(id), wpn, g_wpn[id], cur, slotguns, tsgun)
+		server_print("[ZM-WPN] %s bot=%d zom=%d alive wpn=%d g_wpn=%d cur=%d liveclip=%d hudclip=%d reload=%d reserve=%d slots=%d tsgun=%d",
+			name, is_user_bot(id), player_is_zombie(id), wpn, g_wpn[id], cur, liveclip, clip, reloading, reserve, slotguns, tsgun)
 	}
 	return PLUGIN_HANDLED
 }
@@ -4534,13 +4597,10 @@ public reward_frag_ammo(id)
 		wpn = g_wpn[id]
 	if(is_unarmed_weapon(wpn) || wpn == 24 || wpn == 25 || wpn == 29 || wpn == 34 || wpn == 35)
 		return
-	static clipsize[37] = {0,17,15,32,7,30,30,30,15,12,12,20,7,30,20,30,32,20,5,40,8,16,15,25,1,0,8,30,17,0,20,5,100,2,0,0,1}
 	new addclips = get_cvar_num("sv_ammo_per_frag")
 	if(addclips < 1)
 		addclips = 1
-	new mag = (wpn < 37) ? clipsize[wpn] : 15
-	if(mag < 1)
-		mag = 15
+	new mag = ts_weapon_clipsize(wpn)
 	new give = mag * addclips
 	new reserve = ts_get_reserve_ammo(id, wpn)
 	if(reserve < 0)
@@ -4554,49 +4614,59 @@ public reward_frag_ammo(id)
 		client_print(id, print_center, "+%d ammo", give)
 }
 
-// RCBot never buys ammo and TS maps have none lying around, so outside
-// Zombie Mod a dry bot just clicks an empty gun forever. Keep bot reserves
-// stocked, and when one is fully dry re-give its weapon (bots reload
-// unreliably, so a fresh clip beats waiting for them to press reload).
+// RCBot 1.51b13 never taps +reload in TS 3.0. ItemPostFrame checks +attack
+// before +reload, so a bot that holds fire dry-clicks forever. Keep reserve
+// stocked, then force +reload and drop +attack so CTSGun::Reload runs and
+// ItemPostFrame fills the mag after the real delay. Do not write the clip.
+stock bot_hold_reload(id)
+{
+	new btn = entity_get_int(id, EV_INT_button)
+	entity_set_int(id, EV_INT_button, (btn & ~(IN_ATTACK | IN_ATTACK2)) | IN_RELOAD)
+}
+
+stock bot_force_reload(id)
+{
+	if(!is_user_bot(id) || !is_user_alive(id))
+		return
+	new tsgun = ts_find_tsgun(id)
+	if(!tsgun)
+		return
+	new wpn = get_pdata_int(tsgun, TSGUN_OFF_CURWPN, TSGUN_LINUXDIFF)
+	if(!ts_is_reloadable_gun(wpn))
+		return
+	new base = ts_weapon_slot_base(wpn)
+	if(!get_pdata_int(tsgun, base, TSGUN_LINUXDIFF))
+		return
+	new mag = ts_weapon_clipsize(wpn)
+	new clip = get_pdata_int(tsgun, base + TSGUN_OFF_SLOTCLIP, TSGUN_LINUXDIFF)
+	new reloading = get_pdata_int(tsgun, base + TSGUN_OFF_SLOTRELOAD, TSGUN_LINUXDIFF)
+	new reserve = ts_get_reserve_ammo(id, wpn)
+	if(reserve < mag)
+	{
+		new want_reserve = mag * 3
+		if(want_reserve > 250)
+			want_reserve = 250
+		new ammotype = ts_weapon_ammo_type(wpn)
+		if(ammotype >= 0 && ammotype <= 15)
+		{
+			set_pdata_int(tsgun, TSGUN_OFF_AMMO0 + ammotype, want_reserve, TSGUN_LINUXDIFF)
+			set_pdata_int(tsgun, TSGUN_OFF_HUDAMMO, want_reserve, TSGUN_LINUXDIFF)
+			reserve = want_reserve
+			new hudclip, hudammo, mode, extra
+			ts_getuserwpn(id, hudclip, hudammo, mode, extra)
+			ts_send_weapon_hud(id, wpn, clip, reserve, mode, extra)
+		}
+	}
+	if(reloading || clip <= 0)
+		bot_hold_reload(id)
+}
+
 public task_bot_ammo_refill()
 {
-	if(g_gamemode == MODE_ZM)
-		return
-	static clipsize[37] = {0,17,15,32,7,30,30,30,15,12,12,20,7,30,20,30,32,20,5,40,8,16,15,25,1,0,8,30,17,0,20,5,100,2,0,0,1}
 	new num, players[32]
-	// "ad" = alive, skip humans (bots only). "c" is skip-bots, which
-	// made this refill a no-op and left DM bots dry-firing forever.
 	get_players(players, num, "ad")
 	for(new i = 0; i < num; i++)
-	{
-		new id = players[i]
-		if(!is_user_alive(id))
-			continue
-		new clip, ammo, firemode, extra
-		new wpn = ts_getuserwpn(id, clip, ammo, firemode, extra)
-		if(wpn < 1 || wpn > 36 || is_unarmed_weapon(wpn) || wpn == 24 || wpn == 25 || wpn == 29 || wpn == 34 || wpn == 35)
-			continue
-		new mag = clipsize[wpn]
-		if(mag < 1)
-			mag = 15
-		new reserve = ts_get_reserve_ammo(id, wpn)
-		if(reserve < 0)
-			reserve = ammo
-		if(clip <= 0)
-		{
-			// The dry clip is the problem, not the reserve: RCBot keeps firing
-			// an empty gun instead of reloading, and giving a weapon the bot
-			// already owns only merges ammo into reserve — the clip stays
-			// empty. Strip everything first so the re-give is a fresh pickup,
-			// which arrives with a loaded clip.
-			ts_strip_weapons(id)
-			ts_giveweapon(id, wpn, 210, extra)
-			g_wpn[id] = wpn
-			continue
-		}
-		if(reserve < mag)
-			ts_setuserammo(id, wpn, mag * 3)
-	}
+		bot_force_reload(players[i])
 }
 
 // ------------------------- Game mode system -------------------------
