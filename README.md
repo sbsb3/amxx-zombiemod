@@ -14,6 +14,7 @@ The plugin runs one of three modes per map: **Zombie Mod** (default), **Deathmat
 - `/votemode` (also `/votezm`, `/votedm`, `/votetdm`) opens a vote menu for all human players (bots don't vote). After 20 seconds the plurality winner is applied by restarting the current map through the existing safe map-change path (bots are kicked first, RCBot refills them after load).
 - The chosen mode persists across map changes via localinfo `gm_mode`; a full server restart reverts to Zombie Mod.
 - Admins can force a mode from the server console: `gm_mode <zm|dm|tdm>`.
+- The server `hostname` keeps the name from `tsserver.cfg` / `server.cfg` and appends ` | Zombie Mod`, ` | DM`, or ` | Team DM`.
 
 In Deathmatch and Team Deathmatch all zombie behavior is disabled — no zombie team, no exp/level HUD or database writes, no entity removal, no weapon-spawn chat commands — so everyone plays with stock models and the normal TS buy/kit weapons, with RCBots filling the server. In Team Deathmatch everyone is force-assigned to Blue/Red keeping the sides even (leaver imbalance is corrected by moving a dead bot), using stock models set by `gm_tdm_model_blue`/`gm_tdm_model_red`.
 

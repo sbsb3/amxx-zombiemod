@@ -4265,11 +4265,47 @@ stock apply_team_cvars()
 	apply_team_cvars_for(g_gamemode)
 }
 
+// Strip a previous mode tail before adding the current one. Check Team DM
+// first so " | DM" does not eat it. Keep the old "Zombie Mode" tail so a
+// live server upgrades to "Zombie Mod" instead of stacking.
+stock strip_hostname_mode(host[])
+{
+	new n = strlen(host)
+	static const tails[][] = { " | Team DM", " | Zombie Mode", " | Zombie Mod", " | DM" }
+	for(new i = 0; i < sizeof tails; i++)
+	{
+		new tlen = strlen(tails[i])
+		if(n >= tlen && equali(host[n - tlen], tails[i]))
+		{
+			host[n - tlen] = 0
+			return
+		}
+	}
+}
+
+stock apply_hostname_for(mode)
+{
+	new host[80]
+	get_cvar_string("hostname", host, 79)
+	strip_hostname_mode(host)
+	if(!host[0])
+		copy(host, 79, "The Specialists")
+	new out[80]
+	if(mode == MODE_DM)
+		formatex(out, 79, "%s | DM", host)
+	else if(mode == MODE_TDM)
+		formatex(out, 79, "%s | Team DM", host)
+	else
+		formatex(out, 79, "%s | Zombie Mod", host)
+	set_cvar_string("hostname", out)
+}
+
 // The game DLL reads mp_teamplay/mp_teamlist once, at map start, before any
 // plugin runs — so these must already hold the target mode's values when the
 // changelevel happens. No cfg may set them; the plugin is their only owner.
 stock apply_team_cvars_for(mode)
 {
+	apply_hostname_for(mode)
 	if(mode == MODE_DM)
 	{
 		set_cvar_num("mp_teamplay", 0)
