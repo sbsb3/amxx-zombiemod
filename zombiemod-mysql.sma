@@ -99,7 +99,8 @@ new const g_weaps_bit[38] =
 	4, 4, 8, 4, 16, 2, 2, 4, 0, 1, 16, 8, 2, 0, 2, 2,
 	8, 16, 1, 1, 0, 1
 }
-new const g_weaps_pistols[] = {1, 9, 12, 14, 22}
+// Semi-auto / revolver only. Glock-18 (1) is full-auto and RCBot loves it.
+new const g_weaps_pistols[] = {9, 12, 14, 22, 28, 31}
 new const g_weaps_shotguns[] = {4, 20, 26, 33}
 
 new g_gamemode = MODE_ZM
@@ -1630,7 +1631,7 @@ public client_PreThink(id)
 	{
 		if(!weaps_weapon_allowed(weaponid) || !weaps_weapon_allowed(g_wpn[id]))
 			enforce_dm_weaps(id)
-		else if(is_user_bot(id) && weaps_allowed_mask() && is_unarmed_weapon(weaponid))
+		else if(is_user_bot(id) && weaps_allowed_mask() && (is_unarmed_weapon(weaponid) || weaponid == TSW_GLOCK18))
 			enforce_dm_weaps(id)
 	}
 	if(g_gamemode == MODE_ZM && (player_is_zombie(id) || is_user_bot(id)))
@@ -4884,8 +4885,11 @@ stock weaps_slot_occupied(id, wpn)
 
 stock weaps_first_allowed(id)
 {
+	new bot = is_user_bot(id)
 	for(new w = 1; w <= TSGUN_WPN_SLOTS; w++)
 	{
+		if(bot && w == TSW_GLOCK18)
+			continue
 		if(!g_weaps_bit[w] || !weaps_weapon_allowed(w))
 			continue
 		if(weaps_slot_occupied(id, w))
@@ -5064,9 +5068,10 @@ stock enforce_dm_weaps(id)
 	new tsgun = ts_find_tsgun(id)
 	if(!tsgun)
 		return
+	new bot = is_user_bot(id)
 	for(new w = 1; w <= TSGUN_WPN_SLOTS; w++)
 	{
-		if(weaps_weapon_allowed(w))
+		if(weaps_weapon_allowed(w) && !(bot && w == TSW_GLOCK18))
 			continue
 		new base = TSGUN_OFF_WPNBASE + w * TSGUN_WPN_INTS
 		if(!get_pdata_int(tsgun, base, TSGUN_LINUXDIFF))
@@ -5077,19 +5082,19 @@ stock enforce_dm_weaps(id)
 	new clip, ammo, mode, extra
 	new cur = ts_getuserwpn(id, clip, ammo, mode, extra)
 	new pdata_cur = get_pdata_int(tsgun, TSGUN_OFF_CURWPN, TSGUN_LINUXDIFF)
-	if(pdata_cur && !weaps_weapon_allowed(pdata_cur))
+	if(pdata_cur && (!weaps_weapon_allowed(pdata_cur) || (bot && pdata_cur == TSW_GLOCK18)))
 	{
 		set_pdata_int(tsgun, TSGUN_OFF_CURWPN, 0, TSGUN_LINUXDIFF)
 		pdata_cur = 0
 	}
-	if(cur && !weaps_weapon_allowed(cur))
+	if(cur && (!weaps_weapon_allowed(cur) || (bot && cur == TSW_GLOCK18)))
 		cur = 0
-	if(is_user_bot(id) && weaps_allowed_mask())
+	if(bot && weaps_allowed_mask())
 	{
 		new keep = weaps_first_allowed(id)
 		if(keep)
 		{
-			if(!weaps_weapon_allowed(cur) || is_unarmed_weapon(cur))
+			if(!weaps_weapon_allowed(cur) || is_unarmed_weapon(cur) || cur == TSW_GLOCK18)
 				weaps_select(id, keep)
 			return
 		}
