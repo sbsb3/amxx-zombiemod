@@ -90,6 +90,7 @@ new g_allow_change = 0
 #define GM_WEAPS_VOTE_TASK 9201
 #define GM_WEAPS_MAX 5
 #define DM_WEAPS_TASK 8300
+#define DM_WEAPS_GIVE_WINDOW 4.0
 
 // Matches CTSGun IsRestrictedWeapon bits: 1 knives, 2 pistols, 4 SMGs,
 // 8 rifles, 16 shotguns. 0 = always allowed (kung-fu / grenade / C4).
@@ -118,6 +119,7 @@ new g_weaps = 0
 new g_weaps_vote_active = 0
 new g_weaps_votes[5]
 new Float:g_weaps_gave[33]
+new Float:g_weaps_spawn[33]
 new g_weaps_want[33]
 new g_msgid_WeaponInfo
 new g_msgid_ClipInfo
@@ -1631,8 +1633,12 @@ public client_PreThink(id)
 	{
 		if(!weaps_weapon_allowed(weaponid) || !weaps_weapon_allowed(g_wpn[id]))
 			enforce_dm_weaps(id)
-		else if(is_user_bot(id) && weaps_allowed_mask() && (is_unarmed_weapon(weaponid) || weaponid == TSW_GLOCK18))
+		else if(is_user_bot(id) && weaponid == TSW_GLOCK18)
 			enforce_dm_weaps(id)
+		else if(is_user_bot(id) && weaps_can_give(id) && is_unarmed_weapon(weaponid))
+			enforce_dm_weaps(id)
+		else if(is_user_bot(id) && is_unarmed_weapon(weaponid))
+			g_weaps_want[id] = 0
 	}
 	if(g_gamemode == MODE_ZM && (player_is_zombie(id) || is_user_bot(id)))
 		{
@@ -4903,6 +4909,15 @@ stock weaps_has_allowed_gun(id)
 	return weaps_first_allowed(id) ? 1 : 0
 }
 
+stock weaps_can_give(id)
+{
+	if(id < 1 || id > 32)
+		return 0
+	if(g_weaps_spawn[id] <= 0.0)
+		return 0
+	return (get_gametime() - g_weaps_spawn[id] < DM_WEAPS_GIVE_WINDOW)
+}
+
 stock weaps_select(id, wpn)
 {
 	if(wpn < 1 || !is_user_alive(id))
@@ -5022,6 +5037,7 @@ stock schedule_dm_weaps(id)
 		return
 	g_weaps_gave[id] = 0.0
 	g_weaps_want[id] = 0
+	g_weaps_spawn[id] = get_gametime()
 	remove_task(id + DM_WEAPS_TASK)
 	remove_task(id + DM_WEAPS_TASK + 100)
 	remove_task(id + DM_WEAPS_TASK + 200)
@@ -5054,7 +5070,7 @@ public task_dm_weaps_all_bots()
 	{
 		new clip, ammo, mode, extra
 		new wpn = ts_getuserwpn(players[i], clip, ammo, mode, extra)
-		if(is_unarmed_weapon(wpn))
+		if(is_unarmed_weapon(wpn) && weaps_can_give(players[i]))
 			enforce_dm_weaps(players[i])
 	}
 }
@@ -5098,7 +5114,12 @@ stock enforce_dm_weaps(id)
 				weaps_select(id, keep)
 			return
 		}
-		weaps_give_bot_loadout(id)
+		// Only grant a gun right after spawn. A kung-fu disarm mid-life
+		// should leave the bot unarmed if they have no backup knife/gun.
+		if(weaps_can_give(id))
+			weaps_give_bot_loadout(id)
+		else
+			g_weaps_want[id] = 0
 		return
 	}
 	if(cur && !weaps_weapon_allowed(cur))
