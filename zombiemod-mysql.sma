@@ -1622,6 +1622,11 @@ public client_PreThink(id)
 	{
 	if(!is_user_alive(id)) return PLUGIN_CONTINUE
 
+	// RCBot IsEnemy strcmp's setinfo "model" whenever mp_teamlist is set.
+	// Bot profiles each pick their own skin; pin TDM teammates every frame.
+	if(g_gamemode == MODE_TDM)
+		tdm_enforce_side(id)
+
 	if(is_user_bot(id))
 		bot_force_reload(id)
 
@@ -4330,6 +4335,8 @@ stock apply_team_cvars_for(mode)
 		formatex(models, 79, "%s;%s", blue, red)
 		set_cvar_num("mp_teamplay", 1)
 		set_cvar_num("mp_friendlyfire", 0)
+		// Non-empty list: patched RCBot uses the model strcmp (same skin =
+		// teammate). Empty list is DM FFA. Do not leave this blank in TDM.
 		set_cvar_string("mp_teamlist", "Blue;Red")
 		set_cvar_string("mp_teammodels", models)
 		apply_weaponrestriction_for(mode)
@@ -4568,13 +4575,12 @@ stock force_player_side(id)
 		return
 	if(g_gamemode == MODE_DM)
 	{
-		// RCBot 1.51b13 CBot::IsEnemy for TS always strcmp's setinfo "model"
-		// (the m_bTeamPlay==0 FFA jump is NOP'd in the shipped .so). Same
-		// model = teammate, no fire. ZM works because humans are seal and
-		// zombies are collector-zombie. Do NOT collapse everyone to seal.
-		// Unique stock model per slot so even an unpatched RCBot still
-		// treats players as enemies. Human model picks get overwritten —
-		// FFA needs the unique string more than a chosen skin.
+		// RCBot 1.51b13 CBot::IsEnemy for TS: empty mp_teamlist is FFA
+		// (patched .so); a non-empty list strcmp's setinfo "model".
+		// Same model = teammate, no fire. Do NOT collapse everyone to seal.
+		// Unique stock model per slot so an unpatched RCBot still treats
+		// players as enemies. Human model picks get overwritten — FFA
+		// needs the unique string more than a chosen skin.
 		new model[32]
 		new want[16]
 		dm_slot_model(id, want, 15)
@@ -5435,9 +5441,18 @@ public finish_weaps_vote()
 
 stock tdm_model(team, dest[], len)
 {
-	get_cvar_string(team == 2 ? "gm_tdm_model_red" : "gm_tdm_model_blue", dest, len)
-	if(!dest[0])
-		copy(dest, len, team == 2 ? "merc" : "seal")
+	new blue[32], red[32]
+	get_cvar_string("gm_tdm_model_blue", blue, 31)
+	get_cvar_string("gm_tdm_model_red", red, 31)
+	if(!blue[0])
+		copy(blue, 31, "seal")
+	if(!red[0])
+		copy(red, 31, "merc")
+	// RCBot teammates are "same setinfo model". Identical skins would
+	// make the two sides one team as far as bot targeting is concerned.
+	if(equali(blue, red))
+		copy(red, 31, equali(blue, "merc") ? "seal" : "merc")
+	copy(dest, len, team == 2 ? red : blue)
 }
 
 stock tdm_team_counts(&blue, &red)
