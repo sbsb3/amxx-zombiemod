@@ -88,9 +88,18 @@ new g_allow_change = 0
 #define GM_VOTE_TASK 9200
 #define GM_VOTE_SECONDS 20
 #define GM_WEAPS_VOTE_TASK 9201
+#define GM_DIFF_VOTE_TASK 9202
+#define GM_DIFF_RECYCLE_TASK 9203
 #define GM_WEAPS_MAX 5
 #define DM_WEAPS_TASK 8300
 #define DM_WEAPS_GIVE_WINDOW 4.0
+
+// Bot difficulty (voted via /votediff). Affects bot damage, HP, and RCBot reaction.
+#define DIFF_EASY 0
+#define DIFF_NORMAL 1
+#define DIFF_HARD 2
+#define DIFF_NIGHTMARE 3
+#define DIFF_MAX 3
 
 // Matches CTSGun IsRestrictedWeapon bits: 1 knives, 2 pistols, 4 SMGs,
 // 8 rifles, 16 shotguns. 0 = always allowed (kung-fu / grenade / C4).
@@ -121,6 +130,12 @@ new g_weaps_votes[5]
 new Float:g_weaps_gave[33]
 new Float:g_weaps_spawn[33]
 new g_weaps_want[33]
+new g_diff = DIFF_NORMAL
+new g_diff_vote_active = 0
+new g_diff_votes[4]
+new g_bot_hp_cap = 100
+new Float:g_bot_dmg_dealt = 1.0
+new Float:g_bot_dmg_taken = 1.0
 new g_msgid_WeaponInfo
 new g_msgid_ClipInfo
 
@@ -519,6 +534,7 @@ public plugin_init() {
 	register_srvcmd("zm_map","cmd_changelevel")
 	register_srvcmd("gm_mode","cmd_set_gamemode")
 	register_concmd("gm_weaps","cmd_set_weaps",ADMIN_CFG,"<0-5|all|kungfu|melee|pistols|shotguns|nomap> — DM/TDM weapon restriction")
+	register_srvcmd("gm_diff","cmd_set_diff")
 
 	register_cvar("zombiemod_mysql_host","127.0.0.1",FCVAR_PROTECTED)
 	register_cvar("zombiemod_mysql_user","root",FCVAR_PROTECTED)
@@ -572,7 +588,12 @@ public plugin_init() {
 	register_cvar("gm_tdm_model_blue","seal")
 	register_cvar("gm_tdm_model_red","merc")
 	register_cvar("gm_weaponrestriction","0")
+	register_cvar("gm_bot_difficulty","1")
+	// Absolute path to RCBot botprofiles/ — when set, /votediff also rewrites
+	// skill/aim_* and recycles bots. Leave empty to skip (damage/HP/vision still apply).
+	register_cvar("gm_rcbot_profiles","")
 	load_weaps()
+	load_diff()
 
 	register_statsfwd(XMF_DAMAGE)
 	RegisterHam(Ham_TakeDamage, "player", "fw_TakeDamage")
@@ -593,6 +614,7 @@ public plugin_init() {
 
 	register_menucmd(register_menuid("Game Mode Vote"),((1<<0)|(1<<1)|(1<<2)|(1<<9)),"action_gamemode_vote")
 	register_menucmd(register_menuid("Weapon Restriction Vote"),((1<<0)|(1<<1)|(1<<2)|(1<<3)|(1<<4)|(1<<9)),"action_weaps_vote")
+	register_menucmd(register_menuid("Bot Difficulty Vote"),((1<<0)|(1<<1)|(1<<2)|(1<<3)|(1<<9)),"action_diff_vote")
 	register_menucmd(register_menuid("Category"),1023,"actionMenuweapons")
 	register_menucmd(register_menuid("Pistols"),1023,"actionMenuPistol")
 	register_menucmd(register_menuid("Sub-Machine Guns"),1023,"actionMenuSub")
@@ -699,8 +721,10 @@ public plugin_init() {
 public plugin_cfg()
 {
 	load_weaps()
+	load_diff()
 	apply_team_cvars()
 	apply_rcbot_mode_config()
+	apply_bot_difficulty(0)
 	// Re-assert after all queued cfg execs have flushed, in case one of them
 	// still carries stale mp_team* lines (rcbot map_configs can too).
 	set_task(5.0, "task_apply_team_cvars")
@@ -711,8 +735,10 @@ public plugin_cfg()
 public task_apply_team_cvars()
 {
 	load_weaps()
+	load_diff()
 	apply_team_cvars()
 	apply_rcbot_mode_config()
+	apply_bot_difficulty(0)
 }
 
 // bot_config.ini is only read at boot and carries the Zombie Mod settings
@@ -730,6 +756,7 @@ stock apply_rcbot_mode_config()
 	server_cmd("rcbot config ts_kungfu %d", fists)
 	server_cmd("rcbot config ts_dont_pickup_weapons %d", nopick)
 	server_cmd("rcbot config ts_dont_steal_weapons %d", nopick)
+	apply_rcbot_vision_for_diff()
 	server_exec()
 }
 
@@ -2058,7 +2085,11 @@ public spawn_msg(id)
 	{
 		zombie[id] = 0
 		if(is_user_bot(id))
+		{
 			ts_setusercash(id, 16000)
+			remove_task(id + DM_WEAPS_TASK + 50)
+			set_task(0.3, "dm_bot_apply_hp", id + DM_WEAPS_TASK + 50)
+		}
 		schedule_dm_weaps(id)
 		return PLUGIN_HANDLED
 	}
@@ -2181,7 +2212,7 @@ public spawn_evt(id)
 		if(id == nemesis) return PLUGIN_HANDLED
 		if(is_user_bot(id))
 		{
-			set_user_health(id,get_cvar_num("sv_computerzombie_hp"))
+			set_user_health(id, diff_zm_bot_hp())
 		}
 		else
 		{
@@ -2996,11 +3027,16 @@ public handle_say( id )
 			start_weaps_vote(id)
 			return PLUGIN_HANDLED
 		}
+		if(equali(Speech,"/votediff") || equali(Speech,"/votedifficulty") || equali(Speech,"/botdiff"))
+		{
+			start_diff_vote(id)
+			return PLUGIN_HANDLED
+		}
 		// Outside Zombie Mod everyone plays with the stock buy/kit weapons, so
 		// the spawn-a-gun and perk commands stay off.
 		if(g_gamemode != MODE_ZM && !equal(Speech,"/motd") && !equal(Speech,"/help") && !equal(Speech,"/showoff"))
 		{
-			client_print(id, print_chat, "[GameMode] That command is only available in Zombie Mod. Say /votemode or /voteweaps.")
+			client_print(id, print_chat, "[GameMode] That command is only available in Zombie Mod. Say /votemode, /voteweaps, or /votediff.")
 			return PLUGIN_HANDLED
 		}
 		if(equal(Speech,"/motd"))
@@ -4726,6 +4762,19 @@ public fw_TakeDamage(victim, inflictor, attacker, Float:damage, damagebits)
 		return HAM_IGNORED
 	if(same_side(victim, attacker))
 		return HAM_SUPERCEDE
+	new scaled = 0
+	if(is_user_bot(attacker) && g_bot_dmg_dealt != 1.0)
+	{
+		damage *= g_bot_dmg_dealt
+		scaled = 1
+	}
+	if(is_user_bot(victim) && g_bot_dmg_taken != 1.0)
+	{
+		damage *= g_bot_dmg_taken
+		scaled = 1
+	}
+	if(scaled)
+		SetHamParamFloat(4, damage)
 	return HAM_IGNORED
 }
 
@@ -5267,7 +5316,7 @@ public start_gamemode_vote(id)
 		return PLUGIN_HANDLED
 	if(g_changing_map || g_pending_mode != -1)
 		return PLUGIN_HANDLED
-	if(g_vote_active || g_weaps_vote_active)
+	if(g_vote_active || g_weaps_vote_active || g_diff_vote_active)
 	{
 		client_print(id, print_chat, "[GameMode] A vote is already in progress.")
 		return PLUGIN_HANDLED
@@ -5365,7 +5414,7 @@ public start_weaps_vote(id)
 	}
 	if(g_changing_map || g_pending_mode != -1)
 		return PLUGIN_HANDLED
-	if(g_vote_active || g_weaps_vote_active)
+	if(g_vote_active || g_weaps_vote_active || g_diff_vote_active)
 	{
 		client_print(id, print_chat, "[GameMode] A vote is already in progress.")
 		return PLUGIN_HANDLED
@@ -5441,6 +5490,434 @@ public finish_weaps_vote()
 	}
 	set_weaps(winner)
 	client_print(0, print_chat, "[GameMode] %s wins. Takes effect on the next buy or spawn.", name)
+}
+
+// ------------------------- Bot difficulty vote -------------------------
+
+stock load_diff()
+{
+	new s[8]
+	get_localinfo("gm_diff", s, 7)
+	if(s[0] >= '0' && s[0] <= '3' && !s[1])
+		g_diff = s[0] - '0'
+	else
+		g_diff = get_cvar_num("gm_bot_difficulty")
+	if(g_diff < DIFF_EASY || g_diff > DIFF_NIGHTMARE)
+		g_diff = DIFF_NORMAL
+	diff_apply_multipliers(g_diff)
+}
+
+stock diff_name(diff, dest[], len)
+{
+	switch(diff)
+	{
+		case DIFF_EASY: copy(dest, len, "Easy")
+		case DIFF_HARD: copy(dest, len, "Hard")
+		case DIFF_NIGHTMARE: copy(dest, len, "Nightmare")
+		default: copy(dest, len, "Normal")
+	}
+}
+
+stock parse_diff_arg(const arg[])
+{
+	if(!arg[0])
+		return -1
+	if(arg[0] >= '0' && arg[0] <= '3' && !arg[1])
+		return arg[0] - '0'
+	if(equali(arg, "easy") || equali(arg, "e"))
+		return DIFF_EASY
+	if(equali(arg, "normal") || equali(arg, "norm") || equali(arg, "medium") || equali(arg, "med") || equali(arg, "n"))
+		return DIFF_NORMAL
+	if(equali(arg, "hard") || equali(arg, "h"))
+		return DIFF_HARD
+	if(equali(arg, "nightmare") || equali(arg, "night") || equali(arg, "nm") || equali(arg, "insane"))
+		return DIFF_NIGHTMARE
+	return -1
+}
+
+stock diff_apply_multipliers(diff)
+{
+	switch(diff)
+	{
+		case DIFF_EASY:
+		{
+			g_bot_dmg_dealt = 0.60
+			g_bot_dmg_taken = 1.50
+		}
+		case DIFF_HARD:
+		{
+			g_bot_dmg_dealt = 1.25
+			g_bot_dmg_taken = 0.80
+		}
+		case DIFF_NIGHTMARE:
+		{
+			g_bot_dmg_dealt = 1.50
+			g_bot_dmg_taken = 0.65
+		}
+		default:
+		{
+			g_bot_dmg_dealt = 1.00
+			g_bot_dmg_taken = 1.00
+		}
+	}
+	g_bot_hp_cap = (g_gamemode == MODE_ZM) ? diff_zm_bot_hp() : diff_dm_bot_hp()
+}
+
+stock diff_zm_bot_hp()
+{
+	new base = get_cvar_num("sv_computerzombie_hp")
+	if(base < 1)
+		base = 100
+	switch(g_diff)
+	{
+		case DIFF_EASY: return (base * 70) / 100
+		case DIFF_HARD: return (base * 150) / 100
+		case DIFF_NIGHTMARE: return (base * 200) / 100
+		default: return base
+	}
+	return base
+}
+
+stock diff_dm_bot_hp()
+{
+	switch(g_diff)
+	{
+		case DIFF_EASY: return 80
+		case DIFF_HARD: return 125
+		case DIFF_NIGHTMARE: return 150
+		default: return 100
+	}
+	return 100
+}
+
+stock Float:diff_vision_time()
+{
+	switch(g_diff)
+	{
+		case DIFF_EASY: return 0.12
+		case DIFF_NIGHTMARE: return 0.005
+		default: return 0.01
+	}
+	return 0.01
+}
+
+stock diff_vision_revs()
+{
+	switch(g_diff)
+	{
+		case DIFF_EASY: return 100
+		case DIFF_NIGHTMARE: return 250
+		default: return 200
+	}
+	return 200
+}
+
+stock diff_profile_skill()
+{
+	switch(g_diff)
+	{
+		case DIFF_EASY: return 40
+		case DIFF_HARD: return 95
+		case DIFF_NIGHTMARE: return 100
+		default: return 90
+	}
+	return 90
+}
+
+stock Float:diff_profile_aim_skill()
+{
+	switch(g_diff)
+	{
+		case DIFF_EASY: return 0.05
+		case DIFF_HARD: return 0.50
+		case DIFF_NIGHTMARE: return 0.80
+		default: return 0.20
+	}
+	return 0.20
+}
+
+stock Float:diff_profile_aim_time()
+{
+	switch(g_diff)
+	{
+		case DIFF_EASY: return 1.50
+		case DIFF_HARD: return 0.50
+		case DIFF_NIGHTMARE: return 0.25
+		default: return 1.00
+	}
+	return 1.00
+}
+
+stock Float:diff_profile_aim_speed()
+{
+	switch(g_diff)
+	{
+		case DIFF_EASY: return 0.15
+		case DIFF_HARD: return 0.40
+		case DIFF_NIGHTMARE: return 0.60
+		default: return 0.25
+	}
+	return 0.25
+}
+
+stock apply_rcbot_vision_for_diff()
+{
+	new Float:vt = diff_vision_time()
+	new revs = diff_vision_revs()
+	new vtstr[16]
+	formatex(vtstr, 15, "%.3f", vt)
+	server_cmd("rcbot config update_vision_time %s", vtstr)
+	server_cmd("rcbot config max_update_vision_revs %d", revs)
+}
+
+stock rescale_alive_bot_hp(old_cap, new_cap)
+{
+	if(old_cap < 1 || new_cap < 1 || old_cap == new_cap)
+		return
+	new num, players[32]
+	get_players(players, num, "a")
+	for(new i = 0; i < num; i++)
+	{
+		new id = players[i]
+		if(!is_user_bot(id))
+			continue
+		new hp = get_user_health(id)
+		new nhp = (hp * new_cap) / old_cap
+		if(nhp < 1)
+			nhp = 1
+		set_user_health(id, nhp)
+	}
+}
+
+public dm_bot_apply_hp(tid)
+{
+	new id = tid - (DM_WEAPS_TASK + 50)
+	if(id < 1 || id > 32)
+		return
+	if(!is_user_connected(id) || !is_user_alive(id) || !is_user_bot(id))
+		return
+	if(g_gamemode == MODE_ZM)
+		return
+	set_user_health(id, diff_dm_bot_hp())
+}
+
+stock set_diff(diff, recycle_bots)
+{
+	if(diff < DIFF_EASY || diff > DIFF_NIGHTMARE)
+		diff = DIFF_NORMAL
+	new old_cap = g_bot_hp_cap
+	g_diff = diff
+	new s[8]
+	num_to_str(diff, s, 7)
+	set_localinfo("gm_diff", s)
+	set_cvar_num("gm_bot_difficulty", diff)
+	diff_apply_multipliers(diff)
+	apply_bot_difficulty(recycle_bots)
+	rescale_alive_bot_hp(old_cap, g_bot_hp_cap)
+}
+
+// recycle_bots: 1 = rewrite profiles (if configured) and kick/readd bots for aim skill
+stock apply_bot_difficulty(recycle_bots)
+{
+	diff_apply_multipliers(g_diff)
+	apply_rcbot_vision_for_diff()
+	server_exec()
+	new profiles[128]
+	get_cvar_string("gm_rcbot_profiles", profiles, 127)
+	if(profiles[0])
+	{
+		new n = patch_rcbot_profiles(profiles)
+		if(n > 0)
+			server_print("[BotDiff] Patched %d RCBot profiles for difficulty %d", n, g_diff)
+		if(recycle_bots)
+			begin_diff_bot_recycle()
+	}
+}
+
+stock begin_diff_bot_recycle()
+{
+	if(g_changing_map)
+		return
+	client_print(0, print_chat, "[BotDiff] Recycling bots so new aim skill takes effect...")
+	kick_bots_for_mapchange()
+	remove_task(GM_DIFF_RECYCLE_TASK)
+	set_task(1.5, "finish_diff_bot_recycle", GM_DIFF_RECYCLE_TASK)
+}
+
+public finish_diff_bot_recycle()
+{
+	if(g_changing_map)
+		return
+	server_cmd("rcbot config min_bots 8")
+	server_cmd("rcbot config max_bots 10")
+	apply_rcbot_mode_config()
+	server_exec()
+}
+
+stock patch_rcbot_profiles(const dir[])
+{
+	new path[192], tmp[192], count = 0
+	for(new i = 1; i <= 64; i++)
+	{
+		formatex(path, 191, "%s/%d.ini", dir, i)
+		if(!file_exists(path))
+			continue
+		formatex(tmp, 191, "%s/%d.ini.tmp", dir, i)
+		if(!patch_one_rcbot_profile(path, tmp))
+			continue
+		delete_file(path)
+		rename_file(tmp, path, 0)
+		count++
+	}
+	return count
+}
+
+stock patch_one_rcbot_profile(const src[], const dst[])
+{
+	new fp = fopen(src, "rt")
+	if(!fp)
+		return 0
+	new out = fopen(dst, "wt")
+	if(!out)
+	{
+		fclose(fp)
+		return 0
+	}
+	new line[256]
+	new skill = diff_profile_skill()
+	new Float:aim_skill = diff_profile_aim_skill()
+	new Float:aim_time = diff_profile_aim_time()
+	new Float:aim_speed = diff_profile_aim_speed()
+	while(fgets(fp, line, 255))
+	{
+		if(equali(line, "skill=", 6))
+			formatex(line, 255, "skill=%d^n", skill)
+		else if(equali(line, "aim_skill=", 10))
+			formatex(line, 255, "aim_skill=%.2f^n", aim_skill)
+		else if(equali(line, "aim_time=", 9))
+			formatex(line, 255, "aim_time=%.2f;^n", aim_time)
+		else if(equali(line, "aim_speed=", 10))
+			formatex(line, 255, "aim_speed=%.2f^n", aim_speed)
+		fputs(out, line)
+	}
+	fclose(fp)
+	fclose(out)
+	return 1
+}
+
+public cmd_set_diff()
+{
+	new arg[32]
+	read_argv(1, arg, 31)
+	if(!arg[0])
+	{
+		new name[32]
+		diff_name(g_diff, name, 31)
+		server_print("[BotDiff] Usage: gm_diff <0-3|easy|normal|hard|nightmare>")
+		server_print("[BotDiff] Current: %d (%s) - dealt %.2fx take %.2fx HP %d", g_diff, name, g_bot_dmg_dealt, g_bot_dmg_taken, g_bot_hp_cap)
+		return PLUGIN_HANDLED
+	}
+	new diff = parse_diff_arg(arg)
+	if(diff < 0)
+	{
+		server_print("[BotDiff] Unknown difficulty '%s'. Use 0-3 or easy/normal/hard/nightmare.", arg)
+		return PLUGIN_HANDLED
+	}
+	new name[32]
+	diff_name(diff, name, 31)
+	if(diff == g_diff)
+	{
+		server_print("[BotDiff] Already %s.", name)
+		return PLUGIN_HANDLED
+	}
+	set_diff(diff, 1)
+	server_print("[BotDiff] Difficulty: %s", name)
+	client_print(0, print_chat, "[BotDiff] Bot difficulty set to %s.", name)
+	return PLUGIN_HANDLED
+}
+
+public start_diff_vote(id)
+{
+	if(id < 1 || id > 32 || is_user_bot(id))
+		return PLUGIN_HANDLED
+	if(g_changing_map || g_pending_mode != -1)
+		return PLUGIN_HANDLED
+	if(g_vote_active || g_weaps_vote_active || g_diff_vote_active)
+	{
+		client_print(id, print_chat, "[BotDiff] A vote is already in progress.")
+		return PLUGIN_HANDLED
+	}
+	new Float:cooldown = get_cvar_float("gm_vote_cooldown")
+	if(g_last_vote > 0.0 && get_gametime() - g_last_vote < cooldown)
+	{
+		client_print(id, print_chat, "[BotDiff] Please wait %d more seconds before starting another vote.", floatround(cooldown - (get_gametime() - g_last_vote)))
+		return PLUGIN_HANDLED
+	}
+	g_diff_vote_active = 1
+	g_last_vote = get_gametime()
+	for(new i = 0; i < 4; i++)
+		g_diff_votes[i] = 0
+
+	new name[32], curname[32], menu[256]
+	get_user_name(id, name, 31)
+	diff_name(g_diff, curname, 31)
+	client_print(0, print_chat, "[BotDiff] %s started a bot difficulty vote! %d seconds to vote.", name, GM_VOTE_SECONDS)
+	formatex(menu, 255, "Bot Difficulty Vote^n(current: %s)^n^n1. Easy^n2. Normal^n3. Hard^n4. Nightmare^n^n0. No vote", curname)
+
+	new keys = ((1<<0)|(1<<1)|(1<<2)|(1<<3)|(1<<9))
+	new num, players[32]
+	get_players(players, num, "c")
+	for(new i = 0; i < num; i++)
+	{
+		g_voted[players[i]] = 0
+		show_menu(players[i], keys, menu, GM_VOTE_SECONDS)
+	}
+	remove_task(GM_DIFF_VOTE_TASK)
+	set_task(float(GM_VOTE_SECONDS), "finish_diff_vote", GM_DIFF_VOTE_TASK)
+	return PLUGIN_HANDLED
+}
+
+public action_diff_vote(id, key)
+{
+	if(!g_diff_vote_active || key > 3 || is_user_bot(id) || g_voted[id])
+		return PLUGIN_HANDLED
+	g_voted[id] = 1
+	g_diff_votes[key]++
+	new name[32], dname[32]
+	get_user_name(id, name, 31)
+	diff_name(key, dname, 31)
+	client_print(0, print_chat, "[BotDiff] %s voted for %s.", name, dname)
+	return PLUGIN_HANDLED
+}
+
+public finish_diff_vote()
+{
+	if(!g_diff_vote_active)
+		return
+	g_diff_vote_active = 0
+	new total = 0
+	new winner = 0
+	for(new i = 0; i < 4; i++)
+	{
+		total += g_diff_votes[i]
+		if(g_diff_votes[i] > g_diff_votes[winner])
+			winner = i
+	}
+	client_print(0, print_chat, "[BotDiff] Results - Easy: %d, Normal: %d, Hard: %d, Nightmare: %d.", g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3])
+	if(!total)
+	{
+		client_print(0, print_chat, "[BotDiff] No votes were cast. Keeping the current difficulty.")
+		return
+	}
+	new name[32]
+	diff_name(winner, name, 31)
+	if(winner == g_diff)
+	{
+		client_print(0, print_chat, "[BotDiff] %s wins - already using it, no change.", name)
+		return
+	}
+	set_diff(winner, 1)
+	client_print(0, print_chat, "[BotDiff] %s wins. Bot damage, HP, and reaction updated.", name)
 }
 
 // ------------------------- Team Deathmatch -------------------------

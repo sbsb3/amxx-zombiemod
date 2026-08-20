@@ -21,16 +21,22 @@ In Deathmatch and Team Deathmatch all zombie behavior is disabled — no zombie 
 Weapon limits in DM/TDM are the same listen-server presets as the TS `weaponrestriction` cvar (Kung-Fu is never blocked). They do **not** apply in Zombie Mod.
 
 ```bash
-gm_vote_cooldown "120"     # seconds between game mode / restriction votes
+gm_vote_cooldown "120"     # seconds between game mode / restriction / difficulty votes
 gm_tdm_model_blue "seal"   # TDM Blue team model (stock)
 gm_tdm_model_red "merc"    # TDM Red team model (stock)
 gm_weaponrestriction "0"   # DM/TDM default: 0 all, 1 kung-fu, 2 melee,
                            # 3 handguns+melee, 4 handguns+melee+shotguns,
                            # 5 all and ignore map limits
+gm_bot_difficulty "1"      # 0 Easy, 1 Normal, 2 Hard, 3 Nightmare
+gm_rcbot_profiles ""       # optional absolute path to RCBot botprofiles/
+                           # when set, difficulty also rewrites aim/skill and recycles bots
 ```
 
 - `/voteweaps` (also `/voteweapons`) opens a vote in DM/TDM. The winner is applied live (next buy/spawn) and remembered across map changes via localinfo `gm_weaps`. RCBot spawn kits ignore the TS cvar, so the plugin strips illegal guns from bots and gives them a legal one.
 - Admins can force it from console: `gm_weaps <0-5|all|kungfu|melee|pistols|shotguns|nomap>`. Setting it during Zombie Mod only stores the choice for the next DM/TDM.
+- `/votediff` (also `/votedifficulty`, `/botdiff`) opens a bot difficulty vote in any mode. Applied live: bot damage dealt/taken, bot HP, and RCBot reaction time. Persists via localinfo `gm_diff`.
+- Admins can force it: `gm_diff <0-3|easy|normal|hard|nightmare>`.
+- Optional aim skill: set `gm_rcbot_profiles` to the RCBot `botprofiles` directory (or run `support/rcbot/set-bot-difficulty-profiles.py`) so Easy/Hard/Nightmare also rewrite profile `skill`/`aim_*` and recycle bots.
 
 ## Console Variables
 ```bash
@@ -112,6 +118,7 @@ sv_grenade_timer "120"
 ## Chat commands
 - `/votemode` `/votezm` `/votedm` `/votetdm`
 - `/voteweaps` `/voteweapons` (DM/TDM weapon restriction)
+- `/votediff` `/votedifficulty` `/botdiff` (bot difficulty)
 - `/weapon`
 - `/laser`
 - `/flashlight`
@@ -189,6 +196,7 @@ sv_grenade_timer "120"
 ## Server commands
 - `gm_mode` `<zm|dm|tdm>`
 - `gm_weaps` `<0-5|all|kungfu|melee|pistols|shotguns|nomap>`
+- `gm_diff` `<0-3|easy|normal|hard|nightmare>`
 - `spawn_nemesis`
 - `set_objective`
 - `set_objectivestatus`
