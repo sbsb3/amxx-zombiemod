@@ -2150,6 +2150,10 @@ public spawn_evt(id)
 			else if(glow[id] == 6) set_user_rendering(id,kRenderFxGlowShell,225,225,225,kRenderNormal,32)
 			else if(glow[id] == 7) set_user_rendering(id,kRenderFxGlowShell,225,200,0,kRenderNormal,32)
 		}
+		else
+		{
+			set_user_rendering(id,kRenderFxGlowShell,0,0,0,kRenderNormal,32)
+		}
 		new origin[3]
 		get_user_origin(id,origin);
 		if(get_cvar_num("sv_superjump"))
@@ -2626,7 +2630,9 @@ public client_authorized(id) {
 	scope[id] = 0
 	flashlight[id] = 0
 	added[id] = 0
-	thirdperson[id] = 0
+	// Glow perk stays assigned by level/admin; start with the shell off.
+	// /glow toggles thirdperson (1 = glow hidden, 0 = glow visible).
+	thirdperson[id] = 1
 	parasited[id] = 0
 	line[id] = 0;
 	if(g_gamemode != MODE_ZM) return PLUGIN_CONTINUE
