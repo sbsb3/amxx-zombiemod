@@ -136,6 +136,7 @@ new g_diff_votes[4]
 new g_bot_hp_cap = 100
 new Float:g_bot_dmg_dealt = 1.0
 new Float:g_bot_dmg_taken = 1.0
+new g_bot_headshot[33]	// set in TraceAttack; TakeDamage makes bot HS lethal
 new g_msgid_WeaponInfo
 new g_msgid_ClipInfo
 
@@ -4751,6 +4752,11 @@ public fw_TraceAttack(victim, attacker, Float:damage, Float:direction[3], traceh
 		return HAM_IGNORED
 	if(same_side(victim, attacker))
 		return HAM_SUPERCEDE
+	// Headshots on bots are always lethal (ignore difficulty HP / dmg-taken).
+	if(is_user_bot(victim) && get_tr2(tracehandle, TR_iHitgroup) == HIT_HEAD)
+		g_bot_headshot[victim] = 1
+	else
+		g_bot_headshot[victim] = 0
 	return HAM_IGNORED
 }
 
@@ -4762,6 +4768,16 @@ public fw_TakeDamage(victim, inflictor, attacker, Float:damage, damagebits)
 		return HAM_IGNORED
 	if(same_side(victim, attacker))
 		return HAM_SUPERCEDE
+	if(is_user_bot(victim) && g_bot_headshot[victim])
+	{
+		g_bot_headshot[victim] = 0
+		new hp = get_user_health(victim)
+		if(hp < 1)
+			hp = 1
+		SetHamParamFloat(4, float(hp + 10))
+		return HAM_IGNORED
+	}
+	g_bot_headshot[victim] = 0
 	new scaled = 0
 	if(is_user_bot(attacker) && g_bot_dmg_dealt != 1.0)
 	{

@@ -34,7 +34,7 @@ gm_rcbot_profiles ""       # optional absolute path to RCBot botprofiles/
 
 - `/voteweaps` (also `/voteweapons`) opens a vote in DM/TDM. The winner is applied live (next buy/spawn) and remembered across map changes via localinfo `gm_weaps`. RCBot spawn kits ignore the TS cvar, so the plugin strips illegal guns from bots and gives them a legal one.
 - Admins can force it from console: `gm_weaps <0-5|all|kungfu|melee|pistols|shotguns|nomap>`. Setting it during Zombie Mod only stores the choice for the next DM/TDM.
-- `/votediff` (also `/votedifficulty`, `/botdiff`) opens a bot difficulty vote in any mode. Applied live: bot damage dealt/taken, bot HP, and RCBot reaction time. Persists via localinfo `gm_diff`.
+- `/votediff` (also `/votedifficulty`, `/botdiff`) opens a bot difficulty vote in any mode. Applied live: bot damage dealt/taken, bot HP, and RCBot reaction time. Persists via localinfo `gm_diff`. Headshots on bots are always lethal regardless of difficulty.
 - Admins can force it: `gm_diff <0-3|easy|normal|hard|nightmare>`.
 - Optional aim skill: set `gm_rcbot_profiles` to the RCBot `botprofiles` directory (or run `support/rcbot/set-bot-difficulty-profiles.py`) so Easy/Hard/Nightmare also rewrite profile `skill`/`aim_*` and recycle bots.
 
