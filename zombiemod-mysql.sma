@@ -94,7 +94,7 @@ new g_allow_change = 0
 #define DM_WEAPS_TASK 8300
 #define DM_WEAPS_GIVE_WINDOW 4.0
 
-// Bot difficulty (voted via /votediff). Affects bot damage, HP, and RCBot reaction.
+// Bot difficulty (voted via /votediff). Affects bot damage, HP, RCBot reaction, and EXP earned.
 #define DIFF_EASY 0
 #define DIFF_NORMAL 1
 #define DIFF_HARD 2
@@ -2405,6 +2405,7 @@ public client_damage(attacker,victim,damage,wpnindex,hitplace,TA)
 	}*/
 	new Float:thexp2 = damage/expdiv
 	if(zombie[attacker]) thexp2 = thexp2*expmult;
+	thexp2 = thexp2*diff_exp_mult()
 	new thexp = floatround(thexp2);
 	/*if(damage > 1 && damage < 10){
 		thexp = random_num(1, 10)
@@ -5604,6 +5605,20 @@ stock diff_dm_bot_hp()
 		default: return 100
 	}
 	return 100
+}
+
+// Tougher bot difficulty = more EXP per kill/hit, since Easy bots deal/take
+// damage on easier terms (see diff_apply_multipliers) and are less work to kill.
+stock Float:diff_exp_mult()
+{
+	switch(g_diff)
+	{
+		case DIFF_EASY: return 0.75
+		case DIFF_HARD: return 1.35
+		case DIFF_NIGHTMARE: return 1.75
+		default: return 1.00
+	}
+	return 1.00
 }
 
 stock Float:diff_vision_time()
