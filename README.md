@@ -2,6 +2,8 @@
 
 This amxmodx mod was created by Steven Linn <StevenlAFl> for the Half-Life mod The Specialists. It was used to create Zombie DM servers.
 
+This modified version is hosted at `steam://connect/usa.sbmesh.com:27025`.
+
 ## Installation
 - Download and install Metamod
 - Download and install AMXModx and addon:
