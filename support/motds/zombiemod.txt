@@ -2,6 +2,16 @@ This Zombie mod was made by StevenlAFl.
 
 The say commands are:
 
+=== Game Mode Voting ===
+Vote Game Mode (ZombieMod / DM / Team DM) - /votemode
+Vote Weapon Restrictions (DM/TDM only) - /voteweaps
+Vote Bot Difficulty - /votediff
+
+=== Rock The Vote ===
+Rock The Vote (early map vote) - /rtv
+Nominate a map - /nominate <map>
+List nominated maps - /nominations
+
 IMPORTANT: VoteMap Menu - /votemap
 
 Weapons Menu - /weaponsmenu
@@ -14,6 +24,8 @@ Heavy Weapons Menu - /heavymenu
 Use speed powerup - /speed
 Show MOTD - /motd
 Show off skills - /showoff
+Top 15 Leaderboard - /ztop
+Toggle third-person glow - /glow
 
 Reset current EXP count - /resetexp
 Laser sight addon - /laser
@@ -25,7 +37,7 @@ Reset addons - /resetflags
 Random weapon - /weapon
 Random pistol - /pistol
 AK47 - /ak47
-Akimbo Berettas - /akimbos
+Akimbo Berettas - /beretta
 Barrett - /barret
 Benelli M3 - /m3
 Combat Knife - /knife
@@ -43,10 +55,12 @@ M61 Grenade - /grenade
 Mossberg - /mossberg
 MP5K - /mp5k
 MP5SD - /mp5sd
+MP7-PDW - /mp7
 Raging Bull - /ragingbull
 Ruger - /ruger
 Sawed-Off Shotgun - /sawedoff
 Seal Knife - /seal
+Skorpion - /skorpion
 Socom - /socom
 SPAS 12 - /spas12
 Steyr-AUG - /aug
