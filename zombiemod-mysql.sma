@@ -5,6 +5,7 @@
 #include <tsfun>
 #include <tsx>
 #include <tsconst>
+#include <tsdiscordrelay>
 #include <fakemeta>
 #include <fun>
 #include <dbi>
@@ -600,6 +601,7 @@ public plugin_init() {
 	RegisterHam(Ham_TakeDamage, "player", "fw_TakeDamage")
 	RegisterHam(Ham_TraceAttack, "player", "fw_TraceAttack")
 	RegisterHam(Ham_Spawn, "player", "fw_PlayerSpawn", 1)
+	RegisterHam(Ham_Killed, "player", "fw_PlayerKilled")
 	register_message(get_user_msgid("TeamInfo"), "msg_TeamInfo")
 	register_message(get_user_msgid("ScoreInfo"), "msg_ScoreInfo")
 	new gamemode_msg = get_user_msgid("GameMode")
@@ -4697,6 +4699,46 @@ public dm_enforce_task()
 		force_player_side(players[i])
 }
 
+public fw_PlayerKilled(id, attacker, shouldgib)
+{
+	if(id < 1 || id > 32)
+		return HAM_IGNORED
+	strip_grenade_slot(id)
+	new Float:origin[3]
+	entity_get_vector(id, EV_VEC_origin, origin)
+	set_task(0.08, "vacuum_death_nades", 0, origin, 12)
+	return HAM_IGNORED
+}
+
+public vacuum_death_nades(Float:origin[3])
+{
+	new ent = -1
+	while((ent = find_ent_by_class(ent, "ts_groundweapon")))
+	{
+		new Float:eor[3]
+		entity_get_vector(ent, EV_VEC_origin, eor)
+		if(get_distance_f(origin, eor) > 120.0)
+			continue
+		new model[64]
+		entity_get_string(ent, EV_SZ_model, model, 63)
+		if(containi(model, "m61") != -1 || containi(model, "grenade") != -1)
+			remove_entity(ent)
+	}
+}
+
+stock strip_grenade_slot(id)
+{
+	new tsgun = ts_find_tsgun(id)
+	if(!tsgun)
+		return
+	new wpn = TSW_M61GRENADE
+	if(wpn < 1 || wpn > TSGUN_WPN_SLOTS)
+		return
+	new base = TSGUN_OFF_WPNBASE + wpn * TSGUN_WPN_INTS
+	for(new i = 0; i < TSGUN_WPN_INTS; i++)
+		set_pdata_int(tsgun, base + i, 0, TSGUN_LINUXDIFF)
+}
+
 public fw_PlayerSpawn(id)
 {
 	if(id < 1 || id > 32 || !is_user_connected(id))
@@ -5073,6 +5115,8 @@ stock weaps_select(id, wpn)
 
 stock weaps_give_bot_loadout(id)
 {
+	if(!is_user_alive(id))
+		return
 	new mask = weaps_allowed_mask()
 	if(!mask)
 	{
@@ -5365,6 +5409,7 @@ public start_gamemode_vote(id)
 	}
 	remove_task(GM_VOTE_TASK)
 	set_task(float(GM_VOTE_SECONDS), "finish_gamemode_vote", GM_VOTE_TASK)
+	ts_discord_append("gm_vote_started~%d~%d~%s", GM_VOTE_SECONDS, num, curname)
 	return PLUGIN_HANDLED
 }
 
@@ -5391,6 +5436,9 @@ public finish_gamemode_vote()
 	if(!total)
 	{
 		client_print(0, print_chat, "[GameMode] No votes were cast. Keeping the current mode.")
+		new curname[32]
+		gamemode_name(g_gamemode, curname, 31)
+		ts_discord_append("gm_vote_result~0~%s~%d~%d~%d~%d", curname, g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM], total)
 		return
 	}
 	new winner = MODE_ZM
@@ -5402,9 +5450,11 @@ public finish_gamemode_vote()
 	if(winner == g_gamemode)
 	{
 		client_print(0, print_chat, "[GameMode] %s wins - already playing it, no change.", name)
+		ts_discord_append("gm_vote_result~0~%s~%d~%d~%d~%d", name, g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM], total)
 		return
 	}
 	client_print(0, print_chat, "[GameMode] %s wins! Restarting the map in 5 seconds...", name)
+	ts_discord_append("gm_vote_result~1~%s~%d~%d~%d~%d", name, g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM], total)
 	g_pending_mode = winner
 	set_task(5.0, "apply_gamemode_vote")
 }
@@ -5463,6 +5513,7 @@ public start_weaps_vote(id)
 	}
 	remove_task(GM_WEAPS_VOTE_TASK)
 	set_task(float(GM_VOTE_SECONDS), "finish_weaps_vote", GM_WEAPS_VOTE_TASK)
+	ts_discord_append("gm_weaps_vote_started~%d~%d~%s", GM_VOTE_SECONDS, num, curname)
 	return PLUGIN_HANDLED
 }
 
@@ -5496,6 +5547,9 @@ public finish_weaps_vote()
 	if(!total)
 	{
 		client_print(0, print_chat, "[GameMode] No votes were cast. Keeping the current restriction.")
+		new curname[40]
+		weaps_name(g_weaps, curname, 39)
+		ts_discord_append("gm_weaps_vote_result~%d~%s~%d~%d~%d~%d~%d~%d", 0, curname, g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4], total)
 		return
 	}
 	new name[40]
@@ -5503,10 +5557,12 @@ public finish_weaps_vote()
 	if(winner == g_weaps)
 	{
 		client_print(0, print_chat, "[GameMode] %s wins - already using it, no change.", name)
+		ts_discord_append("gm_weaps_vote_result~%d~%s~%d~%d~%d~%d~%d~%d", 0, name, g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4], total)
 		return
 	}
 	set_weaps(winner)
 	client_print(0, print_chat, "[GameMode] %s wins. Takes effect on the next buy or spawn.", name)
+	ts_discord_append("gm_weaps_vote_result~%d~%s~%d~%d~%d~%d~%d~%d", 1, name, g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4], total)
 }
 
 // ------------------------- Bot difficulty vote -------------------------
@@ -5905,6 +5961,7 @@ public start_diff_vote(id)
 	}
 	remove_task(GM_DIFF_VOTE_TASK)
 	set_task(float(GM_VOTE_SECONDS), "finish_diff_vote", GM_DIFF_VOTE_TASK)
+	ts_discord_append("gm_diff_vote_started~%d~%d~%s", GM_VOTE_SECONDS, num, curname)
 	return PLUGIN_HANDLED
 }
 
@@ -5938,6 +5995,9 @@ public finish_diff_vote()
 	if(!total)
 	{
 		client_print(0, print_chat, "[BotDiff] No votes were cast. Keeping the current difficulty.")
+		new curname[32]
+		diff_name(g_diff, curname, 31)
+		ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 0, curname, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
 		return
 	}
 	new name[32]
@@ -5945,10 +6005,12 @@ public finish_diff_vote()
 	if(winner == g_diff)
 	{
 		client_print(0, print_chat, "[BotDiff] %s wins - already using it, no change.", name)
+		ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 0, name, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
 		return
 	}
 	set_diff(winner, 1)
 	client_print(0, print_chat, "[BotDiff] %s wins. Bot damage, HP, and reaction updated.", name)
+	ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 1, name, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
 }
 
 // ------------------------- Team Deathmatch -------------------------
