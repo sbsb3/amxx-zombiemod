@@ -14,6 +14,7 @@
 
 #define FACTORTIME 60
 #define ZM_DROP_TASK 8000
+#define ZM_NADE_TASK 8500
 
 // CTSGun pdata (Linux ts_i386.so). set_pdata_* linuxdiff is 0; offsets are int index (byte/4).
 #define TSGUN_LINUXDIFF		0
@@ -4704,17 +4705,23 @@ public fw_PlayerKilled(id, attacker, shouldgib)
 	if(id < 1 || id > 32)
 		return HAM_IGNORED
 	strip_grenade_slot(id)
+	if(pev_valid(id) != 2)
+		return HAM_IGNORED
 	new Float:origin[3]
 	entity_get_vector(id, EV_VEC_origin, origin)
-	set_task(0.08, "vacuum_death_nades", 0, origin, 12)
+	remove_task(id + ZM_NADE_TASK)
+	set_task(0.15, "vacuum_death_nades", id + ZM_NADE_TASK, origin, 12)
 	return HAM_IGNORED
 }
 
 public vacuum_death_nades(Float:origin[3])
 {
+	new list[32], n
 	new ent = -1
-	while((ent = find_ent_by_class(ent, "ts_groundweapon")))
+	while(n < 32 && (ent = find_ent_by_class(ent, "ts_groundweapon")))
 	{
+		if(pev_valid(ent) != 2)
+			continue
 		new Float:eor[3]
 		entity_get_vector(ent, EV_VEC_origin, eor)
 		if(get_distance_f(origin, eor) > 120.0)
@@ -4722,14 +4729,23 @@ public vacuum_death_nades(Float:origin[3])
 		new model[64]
 		entity_get_string(ent, EV_SZ_model, model, 63)
 		if(containi(model, "m61") != -1 || containi(model, "grenade") != -1)
-			remove_entity(ent)
+			list[n++] = ent
+	}
+	for(new i = 0; i < n; i++)
+	{
+		if(pev_valid(list[i]))
+			remove_entity(list[i])
 	}
 }
 
 stock strip_grenade_slot(id)
 {
-	new tsgun = ts_find_tsgun(id)
-	if(!tsgun)
+	if(pev_valid(id) != 2)
+		return
+	// Owner lookup only -- ts_find_tsgun also walks a sphere, which is unsafe
+	// in Ham_Killed while the engine is tearing the player down (world suicides).
+	new tsgun = find_ent_by_owner(-1, "weapon_tsgun", id)
+	if(!tsgun || pev_valid(tsgun) != 2)
 		return
 	new wpn = TSW_M61GRENADE
 	if(wpn < 1 || wpn > TSGUN_WPN_SLOTS)
