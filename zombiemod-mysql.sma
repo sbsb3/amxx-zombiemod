@@ -95,7 +95,8 @@ new g_allow_change = 0
 #define DM_WEAPS_TASK 8300
 #define DM_WEAPS_GIVE_WINDOW 4.0
 
-// Bot difficulty (voted via /votediff). Affects bot damage, HP, RCBot reaction, and EXP earned.
+// Bot difficulty (voted via /votediff). Affects bot damage, RCBot reaction, and EXP earned.
+// Bot HP is the same at every difficulty (ZM: sv_computerzombie_hp, DM/TDM: 100).
 #define DIFF_EASY 0
 #define DIFF_NORMAL 1
 #define DIFF_HARD 2
@@ -110,9 +111,10 @@ new const g_weaps_bit[38] =
 	4, 4, 8, 4, 16, 2, 2, 4, 0, 1, 16, 8, 2, 0, 2, 2,
 	8, 16, 1, 1, 0, 1
 }
-// Semi-auto / revolver only. Glock-18 (1) is full-auto and RCBot loves it.
-new const g_weaps_pistols[] = {9, 12, 14, 22, 28, 31}
-new const g_weaps_shotguns[] = {4, 20, 26, 33}
+// Semi-auto pistols. Glock-18 is full-auto; Raging Bull is too strong in bot hands.
+new const g_weaps_pistols[] = {9, 12, 14, 22, 28}
+// No Mossberg — bots dump it the same way they dump Glock-18 / Raging Bull.
+new const g_weaps_shotguns[] = {4, 20, 33}
 
 new g_gamemode = MODE_ZM
 new g_team[33]			// TDM only: 1 = Blue, 2 = Red, 0 = unassigned
@@ -592,7 +594,7 @@ public plugin_init() {
 	register_cvar("gm_weaponrestriction","0")
 	register_cvar("gm_bot_difficulty","1")
 	// Absolute path to RCBot botprofiles/ — when set, /votediff also rewrites
-	// skill/aim_* and recycles bots. Leave empty to skip (damage/HP/vision still apply).
+	// skill/aim_* and recycles bots. Leave empty to skip (damage/vision still apply).
 	register_cvar("gm_rcbot_profiles","")
 	load_weaps()
 	load_diff()
@@ -1663,16 +1665,19 @@ public client_PreThink(id)
 	new weaponid = ts_getuserwpn(id, clip, amm, mode, extra)
 	if(g_weaps_want[id] && weaponid == g_weaps_want[id])
 		g_weaps_want[id] = 0
-	if(g_gamemode != MODE_ZM && g_weaps > 0 && g_weaps < 5)
+	if(g_gamemode != MODE_ZM)
 	{
-		if(!weaps_weapon_allowed(weaponid) || !weaps_weapon_allowed(g_wpn[id]))
+		if(g_weaps > 0 && g_weaps < 5)
+		{
+			if(!weaps_weapon_allowed(weaponid) || !weaps_weapon_allowed(g_wpn[id]))
+				enforce_dm_weaps(id)
+			else if(is_user_bot(id) && weaps_can_give(id) && is_unarmed_weapon(weaponid))
+				enforce_dm_weaps(id)
+			else if(is_user_bot(id) && is_unarmed_weapon(weaponid))
+				g_weaps_want[id] = 0
+		}
+		if(is_user_bot(id) && weaps_bot_denied(weaponid))
 			enforce_dm_weaps(id)
-		else if(is_user_bot(id) && weaponid == TSW_GLOCK18)
-			enforce_dm_weaps(id)
-		else if(is_user_bot(id) && weaps_can_give(id) && is_unarmed_weapon(weaponid))
-			enforce_dm_weaps(id)
-		else if(is_user_bot(id) && is_unarmed_weapon(weaponid))
-			g_weaps_want[id] = 0
 	}
 	if(g_gamemode == MODE_ZM && (player_is_zombie(id) || is_user_bot(id)))
 		{
@@ -4754,7 +4759,7 @@ public fw_TraceAttack(victim, attacker, Float:damage, Float:direction[3], traceh
 		return HAM_IGNORED
 	if(same_side(victim, attacker))
 		return HAM_SUPERCEDE
-	// Headshots on bots are always lethal (ignore difficulty HP / dmg-taken).
+	// Headshots on bots are always lethal (ignore dmg-taken).
 	if(is_user_bot(victim) && get_tr2(tracehandle, TR_iHitgroup) == HIT_HEAD)
 		g_bot_headshot[victim] = 1
 	else
@@ -4989,6 +4994,12 @@ stock weaps_weapon_allowed(wpn)
 	return (bit & weaps_allowed_mask()) ? 1 : 0
 }
 
+// Players can still buy these. Bots may not spawn with or keep them.
+stock weaps_bot_denied(wpn)
+{
+	return (wpn == TSW_GLOCK18 || wpn == TSW_RBULL || wpn == TSW_MOSSBERG)
+}
+
 stock weaps_slot_occupied(id, wpn)
 {
 	new tsgun = ts_find_tsgun(id)
@@ -5009,7 +5020,7 @@ stock weaps_first_allowed(id)
 	new bot = is_user_bot(id)
 	for(new w = 1; w <= TSGUN_WPN_SLOTS; w++)
 	{
-		if(bot && w == TSW_GLOCK18)
+		if(bot && weaps_bot_denied(w))
 			continue
 		if(!g_weaps_bit[w] || !weaps_weapon_allowed(w))
 			continue
@@ -5150,7 +5161,11 @@ stock schedule_dm_weaps(id)
 {
 	if(id < 1 || id > 32)
 		return
-	if(g_gamemode == MODE_ZM || g_weaps <= 0 || g_weaps >= 5)
+	if(g_gamemode == MODE_ZM)
+		return
+	// Humans only need this under a restriction preset. Bots always do:
+	// Glock-18 / Raging Bull / Mossberg are stripped even on "all weapons".
+	if(!is_user_bot(id) && (g_weaps <= 0 || g_weaps >= 5))
 		return
 	g_weaps_gave[id] = 0.0
 	g_weaps_want[id] = 0
@@ -5177,9 +5192,7 @@ public task_dm_weaps(tid)
 
 public task_dm_weaps_all_bots()
 {
-	if(g_gamemode == MODE_ZM || g_weaps <= 0 || g_weaps >= 5)
-		return
-	if(!weaps_allowed_mask())
+	if(g_gamemode == MODE_ZM)
 		return
 	new num, players[32]
 	get_players(players, num, "ad")
@@ -5187,24 +5200,28 @@ public task_dm_weaps_all_bots()
 	{
 		new clip, ammo, mode, extra
 		new wpn = ts_getuserwpn(players[i], clip, ammo, mode, extra)
-		if(is_unarmed_weapon(wpn) && weaps_can_give(players[i]))
+		if(weaps_bot_denied(wpn))
+			enforce_dm_weaps(players[i])
+		else if(g_weaps > 0 && g_weaps < 5 && weaps_allowed_mask() && is_unarmed_weapon(wpn) && weaps_can_give(players[i]))
 			enforce_dm_weaps(players[i])
 	}
 }
 
 stock enforce_dm_weaps(id)
 {
-	if(g_gamemode == MODE_ZM || g_weaps <= 0 || g_weaps >= 5)
+	if(g_gamemode == MODE_ZM)
 		return
 	if(id < 1 || id > 32 || !is_user_alive(id))
+		return
+	new bot = is_user_bot(id)
+	if(!bot && (g_weaps <= 0 || g_weaps >= 5))
 		return
 	new tsgun = ts_find_tsgun(id)
 	if(!tsgun)
 		return
-	new bot = is_user_bot(id)
 	for(new w = 1; w <= TSGUN_WPN_SLOTS; w++)
 	{
-		if(weaps_weapon_allowed(w) && !(bot && w == TSW_GLOCK18))
+		if(weaps_weapon_allowed(w) && !(bot && weaps_bot_denied(w)))
 			continue
 		new base = TSGUN_OFF_WPNBASE + w * TSGUN_WPN_INTS
 		if(!get_pdata_int(tsgun, base, TSGUN_LINUXDIFF))
@@ -5215,19 +5232,19 @@ stock enforce_dm_weaps(id)
 	new clip, ammo, mode, extra
 	new cur = ts_getuserwpn(id, clip, ammo, mode, extra)
 	new pdata_cur = get_pdata_int(tsgun, TSGUN_OFF_CURWPN, TSGUN_LINUXDIFF)
-	if(pdata_cur && (!weaps_weapon_allowed(pdata_cur) || (bot && pdata_cur == TSW_GLOCK18)))
+	if(pdata_cur && (!weaps_weapon_allowed(pdata_cur) || (bot && weaps_bot_denied(pdata_cur))))
 	{
 		set_pdata_int(tsgun, TSGUN_OFF_CURWPN, 0, TSGUN_LINUXDIFF)
 		pdata_cur = 0
 	}
-	if(cur && (!weaps_weapon_allowed(cur) || (bot && cur == TSW_GLOCK18)))
+	if(cur && (!weaps_weapon_allowed(cur) || (bot && weaps_bot_denied(cur))))
 		cur = 0
 	if(bot && weaps_allowed_mask())
 	{
 		new keep = weaps_first_allowed(id)
 		if(keep)
 		{
-			if(!weaps_weapon_allowed(cur) || is_unarmed_weapon(cur) || cur == TSW_GLOCK18)
+			if(!weaps_weapon_allowed(cur) || is_unarmed_weapon(cur) || weaps_bot_denied(cur))
 				weaps_select(id, keep)
 			return
 		}
@@ -5600,25 +5617,11 @@ stock diff_zm_bot_hp()
 	new base = get_cvar_num("sv_computerzombie_hp")
 	if(base < 1)
 		base = 100
-	switch(g_diff)
-	{
-		case DIFF_EASY: return (base * 70) / 100
-		case DIFF_HARD: return (base * 150) / 100
-		case DIFF_NIGHTMARE: return (base * 200) / 100
-		default: return base
-	}
 	return base
 }
 
 stock diff_dm_bot_hp()
 {
-	switch(g_diff)
-	{
-		case DIFF_EASY: return 80
-		case DIFF_HARD: return 125
-		case DIFF_NIGHTMARE: return 150
-		default: return 100
-	}
 	return 100
 }
 
@@ -5968,7 +5971,7 @@ public finish_diff_vote()
 		return
 	}
 	set_diff(winner, 1)
-	client_print(0, print_chat, "[BotDiff] %s wins. Bot damage, HP, and reaction updated.", name)
+	client_print(0, print_chat, "[BotDiff] %s wins. Bot damage and reaction updated.", name)
 	ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 1, name, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
 }
 
