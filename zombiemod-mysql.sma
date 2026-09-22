@@ -14,6 +14,7 @@
 
 #define FACTORTIME 60
 #define ZM_DROP_TASK 8000
+#define ZM_NADE_TASK 8500
 
 // CTSGun pdata (Linux ts_i386.so). set_pdata_* linuxdiff is 0; offsets are int index (byte/4).
 #define TSGUN_LINUXDIFF		0
@@ -2792,9 +2793,40 @@ public strikedown(id)
 	user_kill(id)
 	client_cmd(id,"kill")
 }
+public vacuum_death_nades(Float:origin[3])
+{
+	new list[32], n
+	new ent = -1
+	while(n < 32 && (ent = find_ent_by_class(ent, "ts_groundweapon")))
+	{
+		if(pev_valid(ent) != 2)
+			continue
+		new Float:eor[3]
+		entity_get_vector(ent, EV_VEC_origin, eor)
+		if(get_distance_f(origin, eor) > 120.0)
+			continue
+		new model[64]
+		entity_get_string(ent, EV_SZ_model, model, 63)
+		if(containi(model, "m61") != -1 || containi(model, "grenade") != -1)
+			list[n++] = ent
+	}
+	for(new i = 0; i < n; i++)
+	{
+		if(pev_valid(list[i]))
+			remove_entity(list[i])
+	}
+}
+
 public death_msg() {
-	if(g_gamemode != MODE_ZM) return PLUGIN_CONTINUE
 	new id = read_data(2)
+	if(id >= 1 && id <= 32 && is_user_connected(id))
+	{
+		new Float:origin[3]
+		entity_get_vector(id, EV_VEC_origin, origin)
+		remove_task(id + ZM_NADE_TASK)
+		set_task(0.15, "vacuum_death_nades", id + ZM_NADE_TASK, origin, 12)
+	}
+	if(g_gamemode != MODE_ZM) return PLUGIN_CONTINUE
 	new attacker = read_data(1)
 
 	new model[32]
