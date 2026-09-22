@@ -2801,10 +2801,6 @@ public vacuum_death_nades(Float:origin[3])
 	{
 		if(pev_valid(ent) != 2)
 			continue
-		new Float:eor[3]
-		entity_get_vector(ent, EV_VEC_origin, eor)
-		if(get_distance_f(origin, eor) > 120.0)
-			continue
 		new model[64]
 		entity_get_string(ent, EV_SZ_model, model, 63)
 		if(containi(model, "m61") != -1 || containi(model, "grenade") != -1)
