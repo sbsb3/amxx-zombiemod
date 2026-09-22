@@ -2808,7 +2808,12 @@ public vacuum_death_nades(Float:origin[3])
 		new model[64]
 		entity_get_string(ent, EV_SZ_model, model, 63)
 		if(containi(model, "m61") != -1 || containi(model, "grenade") != -1)
+		{
+			server_print("[nade-debug] vacuum ent=%d model=%s origin=%.0f %.0f %.0f corpse=%.0f %.0f %.0f dist=%.0f",
+				ent, model, eor[0], eor[1], eor[2], origin[0], origin[1], origin[2],
+				get_distance_f(origin, eor))
 			list[n++] = ent
+		}
 	}
 	for(new i = 0; i < n; i++)
 	{
@@ -2823,6 +2828,11 @@ public death_msg() {
 	{
 		new Float:origin[3]
 		entity_get_vector(id, EV_VEC_origin, origin)
+		new tsgun = ts_find_tsgun(id)
+		new clip = tsgun ? get_pdata_int(tsgun, TSGUN_OFF_WPNBASE + TSW_M61GRENADE * TSGUN_WPN_INTS + TSGUN_OFF_SLOTCLIP, TSGUN_LINUXDIFF) : -1
+		new has  = tsgun ? get_pdata_int(tsgun, TSGUN_OFF_WPNBASE + TSW_M61GRENADE * TSGUN_WPN_INTS, TSGUN_LINUXDIFF) : 0
+		server_print("[nade-debug] death_msg id=%d mode=%d bot=%d tsgun=%d m61_has=%d m61_clip=%d",
+			id, g_gamemode, is_user_bot(id), tsgun, has, clip)
 		remove_task(id + ZM_NADE_TASK)
 		set_task(0.15, "vacuum_death_nades", id + ZM_NADE_TASK, origin, 12)
 	}
