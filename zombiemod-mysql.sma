@@ -590,6 +590,7 @@ public plugin_init() {
 	register_cvar("sv_ammo_per_frag","1")
 
 	register_cvar("gm_vote_cooldown","120")
+	register_cvar("gm_discord","1")
 	register_cvar("gm_tdm_model_blue","seal")
 	register_cvar("gm_tdm_model_red","merc")
 	register_cvar("gm_weaponrestriction","0")
@@ -5427,7 +5428,8 @@ public start_gamemode_vote(id)
 	}
 	remove_task(GM_VOTE_TASK)
 	set_task(float(GM_VOTE_SECONDS), "finish_gamemode_vote", GM_VOTE_TASK)
-	ts_discord_append("gm_vote_started~%d~%d~%s", GM_VOTE_SECONDS, num, curname)
+	if(get_cvar_num("gm_discord"))
+		ts_discord_append("gm_vote_started~%d~%d~%s", GM_VOTE_SECONDS, num, curname)
 	return PLUGIN_HANDLED
 }
 
@@ -5456,7 +5458,8 @@ public finish_gamemode_vote()
 		client_print(0, print_chat, "[GameMode] No votes were cast. Keeping the current mode.")
 		new curname[32]
 		gamemode_name(g_gamemode, curname, 31)
-		ts_discord_append("gm_vote_result~0~%s~%d~%d~%d~%d", curname, g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM], total)
+		if(get_cvar_num("gm_discord"))
+			ts_discord_append("gm_vote_result~0~%s~%d~%d~%d~%d", curname, g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM], total)
 		return
 	}
 	new winner = MODE_ZM
@@ -5468,11 +5471,13 @@ public finish_gamemode_vote()
 	if(winner == g_gamemode)
 	{
 		client_print(0, print_chat, "[GameMode] %s wins - already playing it, no change.", name)
-		ts_discord_append("gm_vote_result~0~%s~%d~%d~%d~%d", name, g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM], total)
+		if(get_cvar_num("gm_discord"))
+			ts_discord_append("gm_vote_result~0~%s~%d~%d~%d~%d", name, g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM], total)
 		return
 	}
 	client_print(0, print_chat, "[GameMode] %s wins! Restarting the map in 5 seconds...", name)
-	ts_discord_append("gm_vote_result~1~%s~%d~%d~%d~%d", name, g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM], total)
+	if(get_cvar_num("gm_discord"))
+		ts_discord_append("gm_vote_result~1~%s~%d~%d~%d~%d", name, g_votes[MODE_ZM], g_votes[MODE_DM], g_votes[MODE_TDM], total)
 	g_pending_mode = winner
 	set_task(5.0, "apply_gamemode_vote")
 }
@@ -5531,7 +5536,8 @@ public start_weaps_vote(id)
 	}
 	remove_task(GM_WEAPS_VOTE_TASK)
 	set_task(float(GM_VOTE_SECONDS), "finish_weaps_vote", GM_WEAPS_VOTE_TASK)
-	ts_discord_append("gm_weaps_vote_started~%d~%d~%s", GM_VOTE_SECONDS, num, curname)
+	if(get_cvar_num("gm_discord"))
+		ts_discord_append("gm_weaps_vote_started~%d~%d~%s", GM_VOTE_SECONDS, num, curname)
 	return PLUGIN_HANDLED
 }
 
@@ -5567,7 +5573,8 @@ public finish_weaps_vote()
 		client_print(0, print_chat, "[GameMode] No votes were cast. Keeping the current restriction.")
 		new curname[40]
 		weaps_name(g_weaps, curname, 39)
-		ts_discord_append("gm_weaps_vote_result~%d~%s~%d~%d~%d~%d~%d~%d", 0, curname, g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4], total)
+		if(get_cvar_num("gm_discord"))
+			ts_discord_append("gm_weaps_vote_result~%d~%s~%d~%d~%d~%d~%d~%d", 0, curname, g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4], total)
 		return
 	}
 	new name[40]
@@ -5575,12 +5582,14 @@ public finish_weaps_vote()
 	if(winner == g_weaps)
 	{
 		client_print(0, print_chat, "[GameMode] %s wins - already using it, no change.", name)
-		ts_discord_append("gm_weaps_vote_result~%d~%s~%d~%d~%d~%d~%d~%d", 0, name, g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4], total)
+		if(get_cvar_num("gm_discord"))
+			ts_discord_append("gm_weaps_vote_result~%d~%s~%d~%d~%d~%d~%d~%d", 0, name, g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4], total)
 		return
 	}
 	set_weaps(winner)
 	client_print(0, print_chat, "[GameMode] %s wins. Takes effect on the next buy or spawn.", name)
-	ts_discord_append("gm_weaps_vote_result~%d~%s~%d~%d~%d~%d~%d~%d", 1, name, g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4], total)
+	if(get_cvar_num("gm_discord"))
+		ts_discord_append("gm_weaps_vote_result~%d~%s~%d~%d~%d~%d~%d~%d", 1, name, g_weaps_votes[0], g_weaps_votes[1], g_weaps_votes[2], g_weaps_votes[3], g_weaps_votes[4], total)
 }
 
 // ------------------------- Bot difficulty vote -------------------------
@@ -5965,7 +5974,8 @@ public start_diff_vote(id)
 	}
 	remove_task(GM_DIFF_VOTE_TASK)
 	set_task(float(GM_VOTE_SECONDS), "finish_diff_vote", GM_DIFF_VOTE_TASK)
-	ts_discord_append("gm_diff_vote_started~%d~%d~%s", GM_VOTE_SECONDS, num, curname)
+	if(get_cvar_num("gm_discord"))
+		ts_discord_append("gm_diff_vote_started~%d~%d~%s", GM_VOTE_SECONDS, num, curname)
 	return PLUGIN_HANDLED
 }
 
@@ -6001,7 +6011,8 @@ public finish_diff_vote()
 		client_print(0, print_chat, "[BotDiff] No votes were cast. Keeping the current difficulty.")
 		new curname[32]
 		diff_name(g_diff, curname, 31)
-		ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 0, curname, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
+		if(get_cvar_num("gm_discord"))
+			ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 0, curname, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
 		return
 	}
 	new name[32]
@@ -6009,12 +6020,14 @@ public finish_diff_vote()
 	if(winner == g_diff)
 	{
 		client_print(0, print_chat, "[BotDiff] %s wins - already using it, no change.", name)
-		ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 0, name, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
+		if(get_cvar_num("gm_discord"))
+			ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 0, name, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
 		return
 	}
 	set_diff(winner, 1)
 	client_print(0, print_chat, "[BotDiff] %s wins. Bot damage and reaction updated.", name)
-	ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 1, name, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
+	if(get_cvar_num("gm_discord"))
+		ts_discord_append("gm_diff_vote_result~%d~%s~%d~%d~%d~%d~%d", 1, name, g_diff_votes[0], g_diff_votes[1], g_diff_votes[2], g_diff_votes[3], total)
 }
 
 // ------------------------- Team Deathmatch -------------------------
