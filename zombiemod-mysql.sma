@@ -114,8 +114,8 @@ new const g_weaps_bit[38] =
 }
 // Semi-auto pistols. Glock-18 is full-auto; Raging Bull is too strong in bot hands.
 new const g_weaps_pistols[] = {9, 12, 14, 22, 28}
-// No Mossberg / USAS-12 / SPAS-12 — bots dump them the same way they dump Glock-18 / Raging Bull.
-new const g_weaps_shotguns[] = {4, 20, 33}
+// No Mossberg / USAS-12 / SPAS-12 / Benelli M3 — bots dump them the same way they dump Glock-18 / Raging Bull.
+new const g_weaps_shotguns[] = {33}
 
 new g_gamemode = MODE_ZM
 new g_team[33]			// TDM only: 1 = Blue, 2 = Red, 0 = unassigned
@@ -5045,7 +5045,7 @@ stock weaps_weapon_allowed(wpn)
 // Players can still buy these. Bots may not spawn with or keep them.
 stock weaps_bot_denied(wpn)
 {
-	return (wpn == TSW_GLOCK18 || wpn == TSW_RBULL || wpn == TSW_MOSSBERG || wpn == TSW_USAS || wpn == TSW_SPAS)
+	return (wpn == TSW_GLOCK18 || wpn == TSW_RBULL || wpn == TSW_MOSSBERG || wpn == TSW_USAS || wpn == TSW_SPAS || wpn == TSW_M3)
 }
 
 stock weaps_slot_occupied(id, wpn)
@@ -5212,7 +5212,7 @@ stock schedule_dm_weaps(id)
 	if(g_gamemode == MODE_ZM)
 		return
 	// Humans only need this under a restriction preset. Bots always do:
-	// Glock-18 / Raging Bull / Mossberg / USAS-12 / SPAS-12 are stripped even on "all weapons".
+	// Glock-18 / Raging Bull / Mossberg / USAS-12 / SPAS-12 / Benelli M3 are stripped even on "all weapons".
 	if(!is_user_bot(id) && (g_weaps <= 0 || g_weaps >= 5))
 		return
 	g_weaps_gave[id] = 0.0
